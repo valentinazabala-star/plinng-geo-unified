@@ -1169,6 +1169,7 @@ INSTRUCCIONES:
 2. En base a la keyword principal y el contexto de la marca, genera el JSON de salida.
 3. Si no puedes acceder al sitio web, infiere el contexto a partir de la URL, el nombre del negocio y la keyword.
 4. Todos los textos deben estar en ${lang.nameNative}.
+5. Para "related_questions": genera 5 preguntas estilo "People Also Ask" de Google, reales y concretas, que los usuarios buscan sobre esta keyword en el contexto de este negocio. Cada pregunta debe poder ser el eje de un artículo SEO diferente y único. No repitas la "main_user_question".
 
 Devuelve ÚNICAMENTE el siguiente JSON, sin texto adicional:
 {
@@ -1180,7 +1181,14 @@ Devuelve ÚNICAMENTE el siguiente JSON, sin texto adicional:
   "brand_context_summary": "Resumen de 2-3 frases sobre el negocio, su audiencia y propuesta de valor",
   "main_user_question": "La pregunta principal que el usuario quiere responder con este artículo",
   "suggested_structure": ["Sección H2 1", "Sección H2 2", "Sección H2 3", "Sección H2 4"],
-  "additional_notes": "Notas adicionales relevantes para la redacción (tono, diferenciadores, CTAs recomendados)"
+  "additional_notes": "Notas adicionales relevantes para la redacción (tono, diferenciadores, CTAs recomendados)",
+  "related_questions": [
+    "Pregunta frecuente 1 que busca el usuario relacionada con la keyword y el negocio",
+    "Pregunta frecuente 2 — ángulo diferente al artículo principal",
+    "Pregunta frecuente 3 — problema o necesidad específica del cliente",
+    "Pregunta frecuente 4 — comparación, precio, cómo funciona, etc.",
+    "Pregunta frecuente 5 — long-tail con intención local o de conversión"
+  ]
 }`;
 
     const text = await this.generateText({

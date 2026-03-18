@@ -1250,8 +1250,13 @@ const App: React.FC = () => {
   const clientCompanyCategoryRef = React.useRef<string | null>(null);
   const clientCompanySubcategoryRef = React.useRef<string | null>(null);
 
-  // 🧠 Memoria de títulos generados por cuenta (para evitar duplicados)
-  const [accountMemory, setAccountMemory] = useState<Record<string, string[]>>({});
+  // 🧠 Memoria de títulos generados por cuenta (persiste en localStorage entre sesiones)
+  const [accountMemory, setAccountMemory] = useState<Record<string, string[]>>(() => {
+    try {
+      const stored = localStorage.getItem('plinng_account_memory_v1');
+      return stored ? JSON.parse(stored) : {};
+    } catch { return {}; }
+  });
 
   // 🌐 Configuración de WordPress
   const [wpDomain, setWpDomain] = useState<string>(import.meta.env.VITE_WP_DOMAIN || 'https://cienciacronica.com');
@@ -1277,6 +1282,13 @@ const App: React.FC = () => {
   // 🗺️ Datos del post GMB generado (acceso síncrono para publish)
   const [gmbPostData, setGmbPostData] = useState<GmbPost | null>(null);
   const gmbPostDataRef = React.useRef<GmbPost | null>(null);
+
+  // 💾 Persistir memoria de cuentas en localStorage cada vez que cambia
+  React.useEffect(() => {
+    if (Object.keys(accountMemory).length > 0) {
+      try { localStorage.setItem('plinng_account_memory_v1', JSON.stringify(accountMemory)); } catch { /* storage full */ }
+    }
+  }, [accountMemory]);
 
   // 📋 Capturar URLs publicadas automáticamente en modo CSV
   React.useEffect(() => {
@@ -3958,10 +3970,25 @@ const App: React.FC = () => {
           addLog(`🔍 Analizando web del cliente: ${detectedWebsite}`);
           try {
             const lang = communicationLanguageRef.current || communicationLanguage;
-            const ctx = await analyzeWebsite(detectedWebsite, briefKeywords[0], clientBusinessNameRef.current || undefined, lang);
+            const seedKw = briefKeywords[0] || 'servicios';
+            const ctx = await analyzeWebsite(detectedWebsite, seedKw, clientBusinessNameRef.current || undefined, lang);
             contentContextRef.current = ctx;
             setContentContext(ctx);
             addLog(`✅ CONTENT CONTEXT generado (${ctx.proposed_title.slice(0, 50)}...)`);
+            if (ctx.related_questions?.length) {
+              addLog(`❓ Preguntas PAA (${ctx.related_questions.length}): ${ctx.related_questions.slice(0, 2).join(' | ')}...`);
+            }
+
+            // Si el CSV no tenía keywords (o cayó en fallback genérico), usar las del contexto web
+            const isGenericFallback = briefKeywords.length === 0 || (briefKeywords.length === 1 && briefKeywords[0] === 'servicio');
+            if (isGenericFallback && ctx.primary_keywords?.length) {
+              briefKeywords = [
+                ...ctx.primary_keywords,
+                ...(ctx.secondary_keywords || []),
+              ].filter(k => k.trim().length > 0);
+              originalKeywordsRef.current = briefKeywords;
+              addLog(`🔑 Keywords actualizadas desde contexto web: ${briefKeywords.join(', ')}`);
+            }
           } catch (we: any) {
             addLog(`⚠️ Análisis web falló: ${we.message} — continuando sin contexto`);
           }
@@ -3969,8 +3996,11 @@ const App: React.FC = () => {
           addLog(`ℹ️ Sin website — omitiendo análisis web`);
         }
 
-        // Inicializar memoria para la cuenta
-        if (!accountMemory[row.account_uuid]) {
+        // Inicializar memoria para la cuenta — cargar títulos previos si existen
+        const prevTitles = accountMemory[row.account_uuid] || [];
+        if (prevTitles.length > 0) {
+          addLog(`🧠 Memoria: ${prevTitles.length} artículo(s) previo(s) para esta cuenta — no se repetirán`);
+        } else {
           setAccountMemory(prev => ({ ...prev, [row.account_uuid]: [] }));
         }
       } catch (e: any) {
@@ -4013,6 +4043,16 @@ const App: React.FC = () => {
           const kws = [kw];
           setKeywords(kws);
           addLog(`🎯 Keyword: "${kw}"`);
+
+          // Rotar related_questions como ángulo del artículo (People Also Ask)
+          // Cada artículo responde a una pregunta diferente → mayor diversidad y relevancia
+          const rqs = contentContextRef.current?.related_questions;
+          if (rqs?.length && contentContextRef.current) {
+            // globalArticleIdx garantiza rotación global entre tipos de contenido
+            const rq = rqs[globalArticleIdx % rqs.length];
+            contentContextRef.current = { ...contentContextRef.current, main_user_question: rq };
+            addLog(`❓ Ángulo del artículo: "${rq}"`);
+          }
 
           // Actualizar contador para proceedToOutlineCSV (title uniqueness)
           setBatchProgress(prev => ({ ...prev, currentArticle: globalArticleIdx, currentAccountUuid: row.account_uuid }));

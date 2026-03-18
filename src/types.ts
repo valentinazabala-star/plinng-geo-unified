@@ -68,4 +68,5 @@ export interface ContentContext {
   main_user_question: string;
   suggested_structure: string[];
   additional_notes: string;
+  related_questions?: string[];   // Preguntas PAA — se rotan para variar el ángulo de cada artículo
 }
