@@ -4054,8 +4054,8 @@ const App: React.FC = () => {
             totalArticles: grandTotal,
           }));
 
-          // Rotar keywords
-          const kwIdx = Math.min(i, briefKeywords.length - 1);
+          // Rotar keywords — usar globalArticleIdx para no repetir entre tipos de contenido
+          const kwIdx = Math.min(globalArticleIdx - 1, briefKeywords.length - 1);
           const kw = briefKeywords[kwIdx];
           const kws = [kw];
           setKeywords(kws);
