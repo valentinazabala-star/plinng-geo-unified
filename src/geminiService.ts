@@ -731,6 +731,23 @@ RESPONDE ÚNICAMENTE CON ESTE FORMATO JSON (ARRAY DE ${clusterSize} OBJETOS):
       ? buildOffPageOutlinePrompt(outlineParams)
       : buildOnBlogOutlinePrompt(outlineParams);
 
+    // ── Perspectiva y tono según tipo de contenido ───────────────────────────
+    if (type === 'off_page') {
+      prompt += `
+
+PERSPECTIVA OBLIGATORIA — OFF-PAGE (artículo externo):
+- Escribe SIEMPRE en TERCERA PERSONA. El artículo habla SOBRE el negocio o el sector, nunca DESDE el negocio.
+- PROHIBIDO ABSOLUTAMENTE: "tú", "usted", "nosotros", "nuestros servicios", "contáctanos", "te ofrecemos".
+- CORRECTO: "los especialistas en X ofrecen...", "el negocio se enfoca en...", "quienes buscan X pueden encontrar...".
+- Tono: objetivo, informativo, periodístico. Como un artículo de prensa especializada.`;
+    } else if (contentContext?.writing_tone || contentContext?.grammatical_subject) {
+      prompt += `
+
+TONO Y SUJETO GRAMATICAL (detectados del sitio web del cliente):
+${contentContext.writing_tone ? `- Tono de comunicación: ${contentContext.writing_tone}. Mantén este tono en todo el artículo.` : ''}
+${contentContext.grammatical_subject ? `- Sujeto gramatical: usa "${contentContext.grammatical_subject}" de forma consistente. No mezcles formas de tratamiento.` : ''}`;
+    }
+
     if (contentContext) {
       prompt += `\n\n--- CONTENT CONTEXT (usa esta información para personalizar el artículo) ---\n${JSON.stringify(contentContext, null, 2)}\n---`;
     }
@@ -895,6 +912,22 @@ RESPONDE ÚNICAMENTE CON ESTE FORMATO JSON (ARRAY DE ${clusterSize} OBJETOS):
     let prompt = type === 'off_page'
       ? buildOffPageSectionPrompt(sectionParams)
       : buildOnBlogSectionPrompt(sectionParams);
+
+    // ── Perspectiva y tono según tipo de contenido ───────────────────────────
+    if (type === 'off_page') {
+      prompt += `
+
+PERSPECTIVA OBLIGATORIA — OFF-PAGE:
+- Escribe SIEMPRE en TERCERA PERSONA. Nunca uses "tú", "usted", "nosotros", "contáctanos".
+- CORRECTO: "los especialistas en X...", "el equipo se especializa en...", "los clientes que buscan X...".
+- Tono: objetivo, informativo, periodístico.`;
+    } else if (contentContext?.writing_tone || contentContext?.grammatical_subject) {
+      prompt += `
+
+TONO Y SUJETO GRAMATICAL (detectados del sitio web del cliente):
+${contentContext.writing_tone ? `- Tono: ${contentContext.writing_tone}.` : ''}
+${contentContext.grammatical_subject ? `- Sujeto gramatical: "${contentContext.grammatical_subject}". Aplícalo sin mezclar formas.` : ''}`;
+    }
 
     if (contentContext) {
       prompt += `\n\n--- CONTENT CONTEXT ---\n${JSON.stringify(contentContext, null, 2)}\n---`;
@@ -1170,6 +1203,8 @@ INSTRUCCIONES:
 3. Si no puedes acceder al sitio web, infiere el contexto a partir de la URL, el nombre del negocio y la keyword.
 4. Todos los textos deben estar en ${lang.nameNative}.
 5. Para "related_questions": genera 5 preguntas estilo "People Also Ask" de Google, reales y concretas, que los usuarios buscan sobre esta keyword en el contexto de este negocio. Cada pregunta debe poder ser el eje de un artículo SEO diferente y único. No repitas la "main_user_question".
+6. Para "writing_tone": detecta el tono de comunicación del sitio web (ej: "cercano y cercano", "formal", "profesional y técnico", "amigable", "informativo"). Una palabra o frase corta.
+7. Para "grammatical_subject": detecta cómo el negocio se dirige a su audiencia. Usa EXACTAMENTE uno de estos valores: "yo a tú / nosotros a tú" | "yo a vosotros / nosotros a vosotros" | "yo a usted / nosotros a usted" | "yo a ustedes / nosotros a ustedes". Si no puedes determinarlo, usa "yo a tú / nosotros a tú".
 
 Devuelve ÚNICAMENTE el siguiente JSON, sin texto adicional:
 {
@@ -1181,7 +1216,9 @@ Devuelve ÚNICAMENTE el siguiente JSON, sin texto adicional:
   "brand_context_summary": "Resumen de 2-3 frases sobre el negocio, su audiencia y propuesta de valor",
   "main_user_question": "La pregunta principal que el usuario quiere responder con este artículo",
   "suggested_structure": ["Sección H2 1", "Sección H2 2", "Sección H2 3", "Sección H2 4"],
-  "additional_notes": "Notas adicionales relevantes para la redacción (tono, diferenciadores, CTAs recomendados)",
+  "additional_notes": "Notas adicionales relevantes para la redacción (diferenciadores, CTAs recomendados)",
+  "writing_tone": "cercano",
+  "grammatical_subject": "yo a tú / nosotros a tú",
   "related_questions": [
     "Pregunta frecuente 1 que busca el usuario relacionada con la keyword y el negocio",
     "Pregunta frecuente 2 — ángulo diferente al artículo principal",

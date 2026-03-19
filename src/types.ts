@@ -69,4 +69,6 @@ export interface ContentContext {
   suggested_structure: string[];
   additional_notes: string;
   related_questions?: string[];   // Preguntas PAA — se rotan para variar el ángulo de cada artículo
+  writing_tone?: string;          // Tono detectado del sitio web (cercano, formal, profesional…)
+  grammatical_subject?: string;   // Sujeto gramatical detectado (yo a tú, nosotros a usted…)
 }

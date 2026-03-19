@@ -2768,12 +2768,15 @@ const App: React.FC = () => {
 
       // 1️⃣ Generar texto GMB
       setLoadingStatus("IA redactando publicación GMB...");
+      const gmbCtx = contentContextRef.current;
       const gmbPost: GmbPost = await generateGmbPost({
         language: lang.nameEn,
         mainKeyword,
         secondaryKeywords: activeKeywords.slice(1),
         businessCategory: clientCompanyCategoryRef.current,
         location: clientWebsiteRef.current ? undefined : undefined,
+        tone: gmbCtx?.writing_tone || 'cercano',
+        grammaticalSubject: gmbCtx?.grammatical_subject || 'yo a tú / nosotros a tú',
       });
 
       addLog(`✅ Texto GMB generado: "${gmbPost.title}"`);
