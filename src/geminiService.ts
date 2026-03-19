@@ -1202,13 +1202,13 @@ INSTRUCCIONES:
 2. En base a la keyword principal y el contexto de la marca, genera el JSON de salida.
 3. Si no puedes acceder al sitio web, infiere el contexto a partir de la URL, el nombre del negocio y la keyword.
 4. Todos los textos deben estar en ${lang.nameNative}.
-5. Para "related_questions": genera 5 preguntas estilo "People Also Ask" de Google, reales y concretas, que los usuarios buscan sobre esta keyword en el contexto de este negocio. Cada pregunta debe poder ser el eje de un artículo SEO diferente y único. No repitas la "main_user_question".
+5. Para "related_questions": genera 5 preguntas estilo "People Also Ask" de Google, reales y concretas, que los usuarios buscan sobre esta keyword en el contexto de este negocio. Cada pregunta debe poder ser el eje de un artículo SEO diferente y único. No repitas la "main_user_question". OBLIGATORIO: cada pregunta debe empezar con un verbo interrogativo DISTINTO — usa exactamente este orden: ¿Cómo...?, ¿Cuánto...? / ¿Cuál es la diferencia...?, ¿Por qué...?, ¿Cuándo...? / ¿Cuál...?, ¿Dónde...? / long-tail con intención de conversión. NUNCA uses "¿Qué es...?" — eso ya lo cubre la main_user_question.
 6. Para "writing_tone": detecta el tono de comunicación del sitio web (ej: "cercano y cercano", "formal", "profesional y técnico", "amigable", "informativo"). Una palabra o frase corta.
 7. Para "grammatical_subject": detecta cómo el negocio se dirige a su audiencia. Usa EXACTAMENTE uno de estos valores: "yo a tú / nosotros a tú" | "yo a vosotros / nosotros a vosotros" | "yo a usted / nosotros a usted" | "yo a ustedes / nosotros a ustedes". Si no puedes determinarlo, usa "yo a tú / nosotros a tú".
 
 Devuelve ÚNICAMENTE el siguiente JSON, sin texto adicional:
 {
-  "proposed_title": "Título H1 propuesto para el artículo (pregunta o afirmación optimizada para SEO)",
+  "proposed_title": "Título H1 afirmativo optimizado para SEO (NO usar formato '¿Qué es X?')",
   "primary_keywords": ["keyword principal", "variante 1", "variante 2"],
   "secondary_keywords": ["keyword secundaria 1", "keyword secundaria 2", "keyword secundaria 3"],
   "tags": ["tag1", "tag2", "tag3", "tag4", "tag5"],
