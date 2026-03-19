@@ -1283,6 +1283,9 @@ const App: React.FC = () => {
   const [gmbPostData, setGmbPostData] = useState<GmbPost | null>(null);
   const gmbPostDataRef = React.useRef<GmbPost | null>(null);
 
+  // 🔄 Índice rotativo de portal off_page (para no repetir el mismo portal en publicaciones consecutivas)
+  const offPagePortalIndexRef = React.useRef<number>(0);
+
   // 💾 Persistir memoria de cuentas en localStorage cada vez que cambia
   React.useEffect(() => {
     if (Object.keys(accountMemory).length > 0) {
@@ -2881,7 +2884,17 @@ const App: React.FC = () => {
       throw new Error('No hay configuracion valida de WordPress. Revisa dominios y tokens en .env');
     }
 
-    const selectedTarget = forcedTarget || validWpTargets[Math.floor(Math.random() * validWpTargets.length)];
+    // Para off_page con múltiples portales: rotar en orden en vez de aleatorio
+    // (garantiza distribución equitativa entre cienciacronica, laprensa360, elinformedigital)
+    let selectedTarget: typeof validWpTargets[0];
+    if (forcedTarget) {
+      selectedTarget = forcedTarget;
+    } else if (validWpTargets.length > 1 && contentTypeRef.current === 'off_page') {
+      selectedTarget = validWpTargets[offPagePortalIndexRef.current % validWpTargets.length];
+      offPagePortalIndexRef.current += 1;
+    } else {
+      selectedTarget = validWpTargets[Math.floor(Math.random() * validWpTargets.length)];
+    }
     const WP_DOMAIN = selectedTarget.domain;
     const rawToken = selectedTarget.token.trim();
     const WP_TOKEN = /^Bearer\s+/i.test(rawToken) ? rawToken : `Bearer ${rawToken}`;
@@ -3909,6 +3922,7 @@ const App: React.FC = () => {
     urlMapRef.current = {};
     totalArticlesRef.current = 0;
     currentAccountRef.current = 0;
+    offPagePortalIndexRef.current = 0; // reiniciar rotación de portales off_page
 
     const totalAccounts = csvRowsV2.length;
     const grandTotal = csvRowsV2.reduce((s, r) => s + r.count_onblog + r.count_offpa + r.count_postnoticias, 0);
