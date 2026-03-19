@@ -3885,7 +3885,7 @@ const App: React.FC = () => {
     if (ct === 'gmb') {
       // GMB: generación directa sin outline
       const completedGmb = await startWritingGmb(kws);
-      if (!completedGmb?.sections?.length) throw new Error('GMB vacío');
+      if (!completedGmb?.title) throw new Error('GMB vacío');
       setArticle(completedGmb);
       await wait(1000);
       const result = await publish(completedGmb);
