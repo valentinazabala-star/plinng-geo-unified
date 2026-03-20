@@ -929,6 +929,14 @@ ${contentContext.writing_tone ? `- Tono: ${contentContext.writing_tone}.` : ''}
 ${contentContext.grammatical_subject ? `- Sujeto gramatical: "${contentContext.grammatical_subject}". Aplícalo sin mezclar formas.` : ''}`;
     }
 
+    // Regla universal anti-duplicación de anchor text
+    prompt += `
+
+ANCHOR TEXT DUPLICATION — STRICTLY FORBIDDEN:
+The words used as anchor text must NOT appear again immediately before or after the hyperlink in plain text. The sentence must be written once, with the link embedded inside it. Never write the anchor text twice in the same sentence.
+- CORRECT: "…puedes gestionar tus redes con [una herramienta que trabaja por ti](https://…)."
+- INCORRECT: "…sin necesidad de cirugía mayor [necesidad cirugía mayor](https://…)."`;
+
     if (contentContext) {
       prompt += `\n\n--- CONTENT CONTEXT ---\n${JSON.stringify(contentContext, null, 2)}\n---`;
     }
