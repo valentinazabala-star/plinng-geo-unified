@@ -721,7 +721,8 @@ RESPONDE ÚNICAMENTE CON ESTE FORMATO JSON (ARRAY DE ${clusterSize} OBJETOS):
     language: string = 'Español',
     stage: ContentStage = 'tofu',
     location?: LocationContext,
-    contentContext?: ContentContext
+    contentContext?: ContentContext,
+    previousTitles?: string[],
   ): Promise<Partial<Article>> {
     const lang = resolveLanguageProfile(language);
     const masterPrompt = buildMasterPrompt(lang);
@@ -746,6 +747,12 @@ PERSPECTIVA OBLIGATORIA — OFF-PAGE (artículo externo):
 TONO Y SUJETO GRAMATICAL (detectados del sitio web del cliente):
 ${contentContext.writing_tone ? `- Tono de comunicación: ${contentContext.writing_tone}. Mantén este tono en todo el artículo.` : ''}
 ${contentContext.grammatical_subject ? `- Sujeto gramatical: usa "${contentContext.grammatical_subject}" de forma consistente. No mezcles formas de tratamiento.` : ''}`;
+    }
+
+    if (previousTitles && previousTitles.length > 0) {
+      prompt += `\n\nTÍTULOS YA PUBLICADOS — NO REPETIR NI PARAFRASEAR:
+${previousTitles.map(t => `- "${t}"`).join('\n')}
+El título y enfoque del nuevo artículo deben ser claramente distintos a los anteriores.`;
     }
 
     if (contentContext) {
@@ -1194,13 +1201,14 @@ CORRECTED HTML:
     keyword: string,
     businessName?: string,
     language: string = 'Español',
+    extraContext?: string,
   ): Promise<ContentContext> {
     const lang = resolveLanguageProfile(language);
 
     const prompt = `Eres un agente experto en SEO y marketing de contenidos. Tu objetivo es analizar la web de un cliente y generar un bloque de contexto de contenido (CONTENT CONTEXT) en formato JSON estricto.
 
 DATOS DE ENTRADA:
-- URL del sitio web del cliente: ${websiteUrl}
+- URL del sitio web del cliente: ${websiteUrl}${extraContext ? `\n- Contexto adicional del cliente: ${extraContext}` : ''}
 - Keyword principal del artículo: ${keyword}
 - Nombre del negocio: ${businessName || 'No especificado'}
 - Idioma del artículo: ${lang.nameNative}

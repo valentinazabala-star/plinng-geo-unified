@@ -3549,7 +3549,7 @@ const App: React.FC = () => {
     addLog(`🏷️ Nombre de negocio detectado (CSV): ${resolvedBusinessNameCSV ?? '(no detectado)'} (bloqueado para redaccion)`);
     const csvContentContext = contentContextRef.current || undefined;
     if (csvContentContext) addLog('🧠 Inyectando CONTENT CONTEXT en outline (batch)...');
-    const outline = await generateArticleOutline(topicForOutline, kws, outlineContentType, undefined, contentLanguage, undefined, undefined, csvContentContext);
+    const outline = await generateArticleOutline(topicForOutline, kws, outlineContentType, undefined, contentLanguage, undefined, undefined, csvContentContext, previousTitles.length > 0 ? previousTitles : undefined);
 
     // sanitize titles and intro
     if (outline.title) outline.title = sanitizeTitle(outline.title);
@@ -3965,10 +3965,24 @@ const App: React.FC = () => {
         }
 
         // Usar keywords del CSV (columna kw)
+        // Detecta si la columna contiene keywords (cortas, separadas por coma)
+        // o un contexto descriptivo (frases largas) para usarlo como guía temática
         let kwText = (row.kw || '').trim();
         if (kwText.startsWith('[') && kwText.endsWith(']')) kwText = kwText.slice(1, -1);
-        briefKeywords = kwText.split(',').map(k => k.trim()).filter(k => k.length > 0);
-        if (briefKeywords.length === 0) {
+        const kwRaw = kwText.split(',').map(k => k.trim()).filter(k => k.length > 0);
+        const isContextMode = kwRaw.length > 0 && kwRaw.every(k => k.split(' ').length > 4);
+        let briefContext: string | undefined;
+
+        if (isContextMode) {
+          // kw contiene frases descriptivas — úsalas como contexto adicional
+          briefContext = kwRaw.join('. ');
+          briefKeywords = []; // se llenarán desde analyzeWebsite
+          addLog(`📝 Columna kw interpretada como CONTEXTO: "${briefContext.slice(0, 80)}..."`);
+        } else {
+          briefKeywords = kwRaw;
+        }
+
+        if (briefKeywords.length === 0 && !isContextMode) {
           // Fallback: generar keywords desde el brief si la columna kw está vacía
           addLog(`⚠️ Columna kw vacía — generando keywords desde brief...`);
           const context = extractContextFromData(briefData);
@@ -3977,7 +3991,7 @@ const App: React.FC = () => {
           briefKeywords = generatedKws.map(k => k.trim()).filter(k => k.length > 0);
           if (briefKeywords.length === 0) briefKeywords = ['servicio'];
         }
-        addLog(`🔑 Keywords (${briefKeywords.length}): ${briefKeywords.join(', ')}`);
+        if (briefKeywords.length > 0) addLog(`🔑 Keywords (${briefKeywords.length}): ${briefKeywords.join(', ')}`);
         originalKeywordsRef.current = briefKeywords;
 
         // 1b️⃣ Análisis web del cliente (Web Analyst Agent)
@@ -3988,7 +4002,7 @@ const App: React.FC = () => {
           try {
             const lang = communicationLanguageRef.current || communicationLanguage;
             const seedKw = briefKeywords[0] || 'servicios';
-            const ctx = await analyzeWebsite(detectedWebsite, seedKw, clientBusinessNameRef.current || undefined, lang);
+            const ctx = await analyzeWebsite(detectedWebsite, seedKw, clientBusinessNameRef.current || undefined, lang, briefContext);
             contentContextRef.current = ctx;
             setContentContext(ctx);
             addLog(`✅ CONTENT CONTEXT generado (${ctx.proposed_title.slice(0, 50)}...)`);
@@ -3996,15 +4010,15 @@ const App: React.FC = () => {
               addLog(`❓ Preguntas PAA (${ctx.related_questions.length}): ${ctx.related_questions.slice(0, 2).join(' | ')}...`);
             }
 
-            // Si el CSV no tenía keywords (o cayó en fallback genérico), usar las del contexto web
+            // Si kw era contexto o estaba vacío, usar keywords del análisis web
             const isGenericFallback = briefKeywords.length === 0 || (briefKeywords.length === 1 && briefKeywords[0] === 'servicio');
-            if (isGenericFallback && ctx.primary_keywords?.length) {
+            if ((isContextMode || isGenericFallback) && ctx.primary_keywords?.length) {
               briefKeywords = [
                 ...ctx.primary_keywords,
                 ...(ctx.secondary_keywords || []),
               ].filter(k => k.trim().length > 0);
               originalKeywordsRef.current = briefKeywords;
-              addLog(`🔑 Keywords actualizadas desde contexto web: ${briefKeywords.join(', ')}`);
+              addLog(`🔑 Keywords extraídas del contexto web (${briefKeywords.length}): ${briefKeywords.join(', ')}`);
             }
           } catch (we: any) {
             addLog(`⚠️ Análisis web falló: ${we.message} — continuando sin contexto`);
@@ -4054,9 +4068,9 @@ const App: React.FC = () => {
             totalArticles: grandTotal,
           }));
 
-          // Rotar keywords — usar globalArticleIdx para no repetir entre tipos de contenido
-          const kwIdx = Math.min(globalArticleIdx - 1, briefKeywords.length - 1);
-          const kw = briefKeywords[kwIdx];
+          // Rotar keywords en ciclo — cada artículo usa una keyword distinta, vuelve a empezar si se agotan
+          const kwIdx = briefKeywords.length > 0 ? (globalArticleIdx - 1) % briefKeywords.length : 0;
+          const kw = briefKeywords[kwIdx] || briefKeywords[0] || 'servicio';
           const kws = [kw];
           setKeywords(kws);
           addLog(`🎯 Keyword: "${kw}"`);
