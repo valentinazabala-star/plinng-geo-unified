@@ -3949,23 +3949,30 @@ const App: React.FC = () => {
       gmbPostDataRef.current = null;
       setGmbPostData(null);
 
-      // 3. Generate keywords from brief
-      setFeedbackStatusMsg('Generando keywords...');
+      // 3. Generar keywords priorizando el feedback del cliente
+      // El feedback describe exactamente el tema que quiere el cliente → debe dominar las keywords
+      setFeedbackStatusMsg('Generando keywords a partir del feedback...');
       const briefContext = extractContextFromData(briefData);
       const lang = communicationLanguageRef.current || communicationLanguage;
-      const genKws = await generateKeywords(briefContext, lang);
-      const kws = genKws.length > 0 ? [genKws[0]] : ['servicio'];
+      // Combinamos: feedback primero (mayor peso) + brief como contexto de negocio
+      const feedbackPlusContext = `El cliente solicita específicamente: ${feedbackText.trim()}\n\nContexto del negocio: ${briefContext}`;
+      const genKws = await generateKeywords(feedbackPlusContext, lang);
+      const kws = genKws.length > 0 ? [genKws[0]] : [feedbackText.trim().split(' ').slice(0, 3).join(' ')];
       setKeywords(kws);
       originalKeywordsRef.current = kws;
-      addLog(`🔑 Keywords: ${kws.join(', ')}`);
+      addLog(`🔑 Keywords (desde feedback): ${kws.join(', ')}`);
 
-      // 4. Inject feedback into contentContext.additional_notes so it flows into generateArticleOutline
-      const feedbackInstruction = `FEEDBACK DEL CLIENTE (aplicar obligatoriamente en el artículo): ${feedbackText.trim()}`;
+      // 4. Inyectar feedback como instrucción central en el ContentContext
+      // Se pone en proposed_title, main_user_question Y additional_notes para máxima prioridad
+      const feedbackInstruction = `FEEDBACK DEL CLIENTE (aplicar obligatoriamente): ${feedbackText.trim()}`;
       feedbackInstructionsRef.current = feedbackInstruction;
       if (contentContextRef.current) {
         contentContextRef.current = {
           ...contentContextRef.current,
-          additional_notes: [contentContextRef.current.additional_notes, feedbackInstruction]
+          proposed_title: kws[0],
+          primary_keywords: kws,
+          main_user_question: feedbackText.trim(),
+          additional_notes: [feedbackInstruction, contentContextRef.current.additional_notes]
             .filter(Boolean).join('\n\n'),
         };
       } else {
@@ -3975,13 +3982,13 @@ const App: React.FC = () => {
           secondary_keywords: [],
           tags: [],
           search_intent: 'informational',
-          brand_context_summary: '',
-          main_user_question: '',
+          brand_context_summary: briefContext.slice(0, 300),
+          main_user_question: feedbackText.trim(),
           suggested_structure: [],
           additional_notes: feedbackInstruction,
         };
       }
-      addLog('🧠 Feedback inyectado en el contexto de generación');
+      addLog('🧠 Feedback inyectado como tema principal del artículo');
 
       // 5. Generar outline + escribir artículo con el feedback como instrucción
       setFeedbackStatusMsg('Generando estructura del artículo con feedback aplicado...');
