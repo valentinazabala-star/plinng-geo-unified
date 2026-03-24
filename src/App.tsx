@@ -1250,6 +1250,17 @@ const App: React.FC = () => {
   const clientCompanyCategoryRef = React.useRef<string | null>(null);
   const clientCompanySubcategoryRef = React.useRef<string | null>(null);
 
+  // 📝 Modo Feedback
+  const [isFeedbackMode, setIsFeedbackMode] = useState(false);
+  const [feedbackAccountUuid, setFeedbackAccountUuid] = useState('');
+  const [feedbackContentType, setFeedbackContentType] = useState<ContentType>('on_blog');
+  const [feedbackWpUrl, setFeedbackWpUrl] = useState('');
+  const [feedbackText, setFeedbackText] = useState('');
+  const [feedbackTaskUuid, setFeedbackTaskUuid] = useState('');
+  const [feedbackStatus, setFeedbackStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+  const [feedbackStatusMsg, setFeedbackStatusMsg] = useState('');
+  const feedbackInstructionsRef = React.useRef<string>('');
+
   // 🧠 Memoria de títulos generados por cuenta (persiste en localStorage entre sesiones)
   const [accountMemory, setAccountMemory] = useState<Record<string, string[]>>(() => {
     try {
@@ -2868,7 +2879,8 @@ const App: React.FC = () => {
 
   const publish = async (
     articleToPublish?: Partial<Article>,
-    forcedTarget?: { domain: string; token: string; label: string }
+    forcedTarget?: { domain: string; token: string; label: string },
+    wpPostId?: number   // si se pasa, actualiza el post existente (PUT) en lugar de crear uno nuevo
   ): Promise<{ success: boolean; msg: string; url?: string }> => {
     setIsPublishing(true);
     setPublishResult(null);
@@ -3355,8 +3367,11 @@ const App: React.FC = () => {
         }
       }
 
-      const response = await fetch(`${WP_DOMAIN}/wp-json/wp/v2/posts`, {
-        method: 'POST',
+      const wpPostEndpointUrl = wpPostId
+        ? `${WP_DOMAIN}/wp-json/wp/v2/posts/${wpPostId}`
+        : `${WP_DOMAIN}/wp-json/wp/v2/posts`;
+      const response = await fetch(wpPostEndpointUrl, {
+        method: wpPostId ? 'PUT' : 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': WP_TOKEN },
         body: JSON.stringify({
           title: safeTitle,           // Usar el título visible en la UI como H1 publicado
@@ -3369,6 +3384,7 @@ const App: React.FC = () => {
           ...buildSmartCrawlBody(smartCrawlMetaPayloads[2].meta),
         })
       });
+      if (wpPostId) addLog(`🔄 Modo actualización: PUT sobre post ID ${wpPostId}`);
 
       if (!response.ok) {
         const err = await response.json();
@@ -3901,6 +3917,135 @@ const App: React.FC = () => {
     await wait(1000);
     const result = await publish(completedArticle);
     return result?.success ? { success: true, url: result.url } : { success: false };
+  };
+
+  // 📝 Flujo de Feedback: regenera artículo con cambios del cliente y actualiza el post de WP existente
+  const handleFeedbackFlow = async () => {
+    if (!feedbackAccountUuid.trim()) { alert('Ingresa el Account UUID del cliente'); return; }
+    if (!feedbackWpUrl.trim()) { alert('Ingresa la URL del artículo en WordPress'); return; }
+    if (!feedbackText.trim()) { alert('Ingresa el feedback del cliente'); return; }
+    if (!feedbackTaskUuid.trim()) { alert('Ingresa el Task UUID'); return; }
+
+    setFeedbackStatus('loading');
+    setFeedbackStatusMsg('Obteniendo brief del cliente...');
+    addLog('\n========================================');
+    addLog('📝 MODO FEEDBACK — Inicio');
+    addLog('========================================');
+
+    try {
+      // 1. Fetch brief
+      const rawText = await fetchBriefByUuid(feedbackAccountUuid.trim());
+      const briefData = rawText.toLowerCase().includes('<!doctype html') || rawText.includes('<html')
+        ? rawText
+        : JSON.parse(rawText);
+
+      setFeedbackStatusMsg('Procesando brief...');
+      const detectedWebsite = await handleDataAcquisition(briefData, true);
+      if (detectedWebsite) clientWebsiteRef.current = detectedWebsite;
+
+      // 2. Set content type
+      contentTypeRef.current = feedbackContentType;
+      setContentType(feedbackContentType);
+      gmbPostDataRef.current = null;
+      setGmbPostData(null);
+
+      // 3. Generate keywords from brief
+      setFeedbackStatusMsg('Generando keywords...');
+      const briefContext = extractContextFromData(briefData);
+      const lang = communicationLanguageRef.current || communicationLanguage;
+      const genKws = await generateKeywords(briefContext, lang);
+      const kws = genKws.length > 0 ? [genKws[0]] : ['servicio'];
+      setKeywords(kws);
+      originalKeywordsRef.current = kws;
+      addLog(`🔑 Keywords: ${kws.join(', ')}`);
+
+      // 4. Inject feedback into contentContext.additional_notes so it flows into generateArticleOutline
+      const feedbackInstruction = `FEEDBACK DEL CLIENTE (aplicar obligatoriamente en el artículo): ${feedbackText.trim()}`;
+      feedbackInstructionsRef.current = feedbackInstruction;
+      if (contentContextRef.current) {
+        contentContextRef.current = {
+          ...contentContextRef.current,
+          additional_notes: [contentContextRef.current.additional_notes, feedbackInstruction]
+            .filter(Boolean).join('\n\n'),
+        };
+      } else {
+        contentContextRef.current = {
+          proposed_title: kws[0],
+          primary_keywords: kws,
+          secondary_keywords: [],
+          tags: [],
+          search_intent: 'informational',
+          brand_context_summary: '',
+          main_user_question: '',
+          suggested_structure: [],
+          additional_notes: feedbackInstruction,
+        };
+      }
+      addLog('🧠 Feedback inyectado en el contexto de generación');
+
+      // 5. Generar outline + escribir artículo con el feedback como instrucción
+      setFeedbackStatusMsg('Generando estructura del artículo con feedback aplicado...');
+      setBatchProgress(prev => ({ ...prev, currentArticle: 1, totalArticles: 1, currentAccountUuid: feedbackAccountUuid.trim() }));
+      const outline = await proceedToOutlineCSV(kws);
+
+      setFeedbackStatusMsg('Redactando contenido...');
+      const completedArticle = await startWriting(outline || undefined, detectedWebsite);
+      if (!completedArticle?.sections?.length) throw new Error('El artículo generado no tiene secciones');
+
+      // 6. Determinar credenciales WP a partir de la URL del post existente
+      const parsedUrl = new URL(feedbackWpUrl.trim());
+      const urlOrigin = parsedUrl.origin.replace(/\/$/, '');
+      const domainMap = [
+        { domain: wpDomainSite5.replace(/\/$/, ''), token: wpJwtTokenSite5, label: 'masproposals.com' },
+        { domain: wpDomain.replace(/\/$/, ''), token: wpJwtToken, label: 'cienciacronica.com' },
+        { domain: wpDomainSite2.replace(/\/$/, ''), token: wpJwtTokenSite2, label: 'elinformedigital.com' },
+        { domain: wpDomainSite3.replace(/\/$/, ''), token: wpJwtTokenSite3, label: 'laprensa360.com' },
+        { domain: wpDomainEnglish.replace(/\/$/, ''), token: wpJwtTokenEnglish, label: 'wall-trends.com' },
+      ];
+      const creds = domainMap.find(d => urlOrigin === d.domain || urlOrigin.includes(d.domain.replace('https://', '').replace('http://', '')));
+      if (!creds) throw new Error(`No se encontraron credenciales para: ${urlOrigin}`);
+      addLog(`🎯 Dominio WP detectado: ${creds.label}`);
+
+      // 7. Obtener ID del post por slug
+      setFeedbackStatusMsg('Localizando post en WordPress...');
+      const pathParts = parsedUrl.pathname.replace(/\/$/, '').split('/').filter(Boolean);
+      const slug = pathParts[pathParts.length - 1];
+      const rawToken = creds.token.trim();
+      const WP_TOKEN_HDR = /^Bearer\s+/i.test(rawToken) ? rawToken : `Bearer ${rawToken}`;
+
+      const slugRes = await fetch(
+        `${creds.domain}/wp-json/wp/v2/posts?slug=${encodeURIComponent(slug)}&_fields=id,link`,
+        { headers: { 'Authorization': WP_TOKEN_HDR } }
+      );
+      if (!slugRes.ok) throw new Error(`Error buscando post por slug (HTTP ${slugRes.status})`);
+      const slugData = await slugRes.json();
+      if (!slugData[0]?.id) throw new Error(`No se encontró post con slug "${slug}" en ${creds.domain}`);
+      const postId = slugData[0].id as number;
+      addLog(`🔍 Post encontrado: ID ${postId}`);
+
+      // 8. Actualizar el post existente (PUT) usando la función publish con wpPostId
+      setFeedbackStatusMsg('Actualizando artículo en WordPress...');
+      const updateResult = await publish(completedArticle, { domain: creds.domain, token: creds.token, label: creds.label }, postId);
+      if (!updateResult?.success || !updateResult.url) throw new Error('Error actualizando el post en WordPress');
+      addLog(`✅ Artículo actualizado: ${updateResult.url}`);
+
+      // 9. Prodline sync (flujo normal)
+      setFeedbackStatusMsg('Sincronizando con Prodline...');
+      const ORBIDI_API_KEY = import.meta.env.VITE_ORBIDI_API_KEY;
+      const syncResult = await syncMarketingActionDirect(feedbackTaskUuid.trim(), updateResult.url, feedbackContentType, ORBIDI_API_KEY);
+      addLog(syncResult.success ? '✅ Prodline sincronizado correctamente' : `⚠️ Prodline: ${syncResult.error}`);
+
+      setFeedbackStatus('success');
+      setFeedbackStatusMsg(updateResult.url);
+      addLog('\n✅ FEEDBACK COMPLETADO');
+
+    } catch (e: any) {
+      addLog(`❌ Error en feedback: ${e.message}`);
+      setFeedbackStatus('error');
+      setFeedbackStatusMsg(e.message);
+    } finally {
+      feedbackInstructionsRef.current = '';
+    }
   };
 
   // 🏭 Producción masiva v2 (formato multi-tipo: on_blog + off_page + gmb por cuenta)
@@ -4924,24 +5069,163 @@ const App: React.FC = () => {
               </div>
 
               <div className="bg-white p-10 rounded-[4rem] shadow-2xl border border-slate-100 mb-8">
-                {/* Tabs: Generar 1 Articulo vs Carga Masiva */}
+                {/* Tabs: Generar 1 Articulo / Carga Masiva / Feedback */}
                 <div className="flex bg-slate-100 p-1.5 rounded-2xl mb-10">
-                  <button 
-                    onClick={() => setIsManualMode(false)} 
-                    className={`flex-1 py-3 rounded-xl font-black text-[10px] transition-all ${!isManualMode ? 'bg-white shadow-sm text-[#A4D62C]' : 'text-slate-500'}`}
+                  <button
+                    onClick={() => { setIsManualMode(false); setIsFeedbackMode(false); }}
+                    className={`flex-1 py-3 rounded-xl font-black text-[10px] transition-all ${!isManualMode && !isFeedbackMode ? 'bg-white shadow-sm text-[#A4D62C]' : 'text-slate-500'}`}
                   >
                     GENERAR 1 ARTICULO
                   </button>
-                  <button 
-                    onClick={() => setIsManualMode(true)} 
-                    className={`flex-1 py-3 rounded-xl font-black text-[10px] transition-all ${isManualMode ? 'bg-white shadow-sm text-[#A4D62C]' : 'text-slate-500'}`}
+                  <button
+                    onClick={() => { setIsManualMode(true); setIsFeedbackMode(false); }}
+                    className={`flex-1 py-3 rounded-xl font-black text-[10px] transition-all ${isManualMode && !isFeedbackMode ? 'bg-white shadow-sm text-[#A4D62C]' : 'text-slate-500'}`}
                   >
                     CARGA MASIVA
                   </button>
+                  <button
+                    onClick={() => { setIsFeedbackMode(true); setIsManualMode(false); setFeedbackStatus('idle'); setFeedbackStatusMsg(''); }}
+                    className={`flex-1 py-3 rounded-xl font-black text-[10px] transition-all ${isFeedbackMode ? 'bg-white shadow-sm text-[#A4D62C]' : 'text-slate-500'}`}
+                  >
+                    FEEDBACK
+                  </button>
                 </div>
 
-                {/* MODO 1: GENERAR 1 ARTICULO */}
-                {!isManualMode ? (
+                {/* MODO 3: FEEDBACK */}
+                {isFeedbackMode ? (
+                  <div className="space-y-6">
+                    {feedbackStatus === 'success' ? (
+                      <div className="text-center space-y-6">
+                        <div className="inline-block p-6 bg-green-100 rounded-full">
+                          <i className="fas fa-check-circle text-5xl text-green-600"></i>
+                        </div>
+                        <h3 className="text-2xl font-black text-green-900">¡Artículo actualizado!</h3>
+                        <a
+                          href={feedbackStatusMsg}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="block text-[#A4D62C] hover:underline font-semibold break-all text-sm"
+                        >
+                          {feedbackStatusMsg}
+                        </a>
+                        <button
+                          onClick={() => { setFeedbackStatus('idle'); setFeedbackStatusMsg(''); setFeedbackAccountUuid(''); setFeedbackWpUrl(''); setFeedbackText(''); setFeedbackTaskUuid(''); setFeedbackContentType('on_blog'); }}
+                          className="w-full bg-slate-900 text-white font-black py-4 rounded-2xl hover:bg-black transition-all"
+                        >
+                          Nuevo Feedback
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        {/* Account UUID */}
+                        <div>
+                          <label className="text-[10px] font-black uppercase text-[#A4D62C] mb-3 block tracking-widest">
+                            Account UUID del Cliente
+                          </label>
+                          <input
+                            type="text"
+                            className="w-full px-6 py-4 rounded-2xl bg-slate-50 border-2 border-transparent focus:border-[#A4D62C] outline-none font-mono text-sm"
+                            placeholder="34ad9915-6fdc-4aed-81a9..."
+                            value={feedbackAccountUuid}
+                            onChange={e => setFeedbackAccountUuid(e.target.value)}
+                          />
+                        </div>
+
+                        {/* Tipo de artículo */}
+                        <div>
+                          <label className="text-[10px] font-black uppercase text-[#A4D62C] mb-3 block tracking-widest">
+                            Tipo de Artículo
+                          </label>
+                          <div className="flex gap-3">
+                            {(['on_blog', 'off_page', 'gmb'] as ContentType[]).map(ct => (
+                              <button
+                                key={ct}
+                                onClick={() => setFeedbackContentType(ct)}
+                                className={`flex-1 py-3 rounded-xl font-black text-[11px] transition-all border-2 ${feedbackContentType === ct ? 'border-[#A4D62C] bg-[#A4D62C]/10 text-[#7A9E1F]' : 'border-slate-200 text-slate-400 hover:border-slate-300'}`}
+                              >
+                                {ct === 'on_blog' ? 'ON BLOG' : ct === 'off_page' ? 'OFF PAGE' : 'GMB'}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* URL del artículo en WP */}
+                        <div>
+                          <label className="text-[10px] font-black uppercase text-[#A4D62C] mb-3 block tracking-widest">
+                            URL del Artículo en WordPress
+                          </label>
+                          <input
+                            type="url"
+                            className="w-full px-6 py-4 rounded-2xl bg-slate-50 border-2 border-transparent focus:border-[#A4D62C] outline-none font-mono text-sm"
+                            placeholder="https://masproposals.com/mi-articulo-seo/"
+                            value={feedbackWpUrl}
+                            onChange={e => setFeedbackWpUrl(e.target.value)}
+                          />
+                        </div>
+
+                        {/* Feedback del cliente */}
+                        <div>
+                          <label className="text-[10px] font-black uppercase text-[#A4D62C] mb-3 block tracking-widest">
+                            Feedback del Cliente
+                          </label>
+                          <textarea
+                            rows={5}
+                            className="w-full px-6 py-4 rounded-2xl bg-slate-50 border-2 border-transparent focus:border-[#A4D62C] outline-none text-sm resize-none"
+                            placeholder="Describe los cambios que solicita el cliente. Ej: Cambiar el tono a más formal, agregar información sobre precios, enfocar más en el barrio X..."
+                            value={feedbackText}
+                            onChange={e => setFeedbackText(e.target.value)}
+                          />
+                        </div>
+
+                        {/* Task UUID para Prodline */}
+                        <div>
+                          <label className="text-[10px] font-black uppercase text-[#A4D62C] mb-3 block tracking-widest">
+                            Task UUID (Prodline)
+                          </label>
+                          <input
+                            type="text"
+                            className="w-full px-6 py-4 rounded-2xl bg-slate-50 border-2 border-transparent focus:border-[#A4D62C] outline-none font-mono text-sm"
+                            placeholder="uuid de la tarea en Prodline..."
+                            value={feedbackTaskUuid}
+                            onChange={e => setFeedbackTaskUuid(e.target.value)}
+                          />
+                        </div>
+
+                        {/* Error */}
+                        {feedbackStatus === 'error' && (
+                          <div className="flex items-start gap-3 p-4 bg-red-50 border-2 border-red-200 rounded-2xl text-red-700 text-sm">
+                            <i className="fas fa-exclamation-circle mt-0.5 flex-shrink-0"></i>
+                            <span>{feedbackStatusMsg}</span>
+                          </div>
+                        )}
+
+                        {/* Loading status */}
+                        {feedbackStatus === 'loading' && (
+                          <div className="flex items-center gap-3 p-4 bg-[#A4D62C]/10 border-2 border-[#A4D62C]/30 rounded-2xl text-[#7A9E1F] text-sm font-semibold">
+                            <i className="fas fa-spinner fa-spin flex-shrink-0"></i>
+                            <span>{feedbackStatusMsg}</span>
+                          </div>
+                        )}
+
+                        {/* Submit */}
+                        <button
+                          onClick={handleFeedbackFlow}
+                          disabled={feedbackStatus === 'loading'}
+                          className={`w-full font-black py-6 rounded-3xl shadow-xl transition-all text-lg flex items-center justify-center gap-4 ${
+                            feedbackStatus === 'loading'
+                              ? 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                              : 'bg-[#A4D62C] text-white hover:bg-[#8DB525]'
+                          }`}
+                        >
+                          {feedbackStatus === 'loading'
+                            ? <><i className="fas fa-spinner fa-spin"></i> Procesando...</>
+                            : <><i className="fas fa-sync-alt"></i> Aplicar Feedback y Actualizar</>
+                          }
+                        </button>
+                      </>
+                    )}
+                  </div>
+                ) : !isManualMode ? (
                   <div className="space-y-8">
                     <div>
                       <label className="text-[10px] font-black uppercase text-[#A4D62C] mb-4 block tracking-widest">
