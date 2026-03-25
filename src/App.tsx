@@ -5923,6 +5923,59 @@ const App: React.FC = () => {
                                 <span>{strategyPdfMsg}</span>
                               </div>
                             )}
+
+                            {strategyPdfStatus === 'success' && (
+                              <div className="rounded-[2rem] border border-amber-200 bg-white p-5 space-y-4 mt-2">
+                                <h4 className="text-base font-black text-slate-900">Cargar en Prodline</h4>
+                                {strategyPdfUrl ? (
+                                  <div className="flex items-start gap-2 p-3 bg-green-50 border border-green-200 rounded-2xl text-green-800 text-xs">
+                                    <i className="fas fa-link mt-0.5 flex-shrink-0"></i>
+                                    <span className="break-all">Entregable listo: <a href={strategyPdfUrl} target="_blank" rel="noopener noreferrer" className="underline">{strategyPdfUrl}</a></span>
+                                  </div>
+                                ) : (
+                                  <div className="flex items-start gap-2 p-3 bg-amber-50 border border-amber-200 rounded-2xl text-amber-800 text-xs">
+                                    <i className="fas fa-exclamation-triangle mt-0.5 flex-shrink-0"></i>
+                                    <span>PDF sin URL de Drive. Configura <code className="font-mono bg-amber-100 px-1 rounded">GOOGLE_STRATEGY_OUTPUT_FOLDER_ID</code>.</span>
+                                  </div>
+                                )}
+                                <div>
+                                  <label className="text-[10px] font-black uppercase text-[#A4D62C] mb-2 block tracking-widest">Task UUID</label>
+                                  <input
+                                    type="text"
+                                    className="w-full px-5 py-4 rounded-2xl bg-slate-50 border-2 border-transparent focus:border-[#A4D62C] outline-none font-mono text-sm"
+                                    placeholder="uuid de la tarea en Prodline..."
+                                    value={strategyTaskUuid}
+                                    onChange={e => setStrategyTaskUuid(e.target.value)}
+                                  />
+                                </div>
+                                {strategyStatus === 'error' && (
+                                  <div className="flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-2xl text-red-700 text-xs">
+                                    <i className="fas fa-exclamation-circle mt-0.5 flex-shrink-0"></i>
+                                    <span>{strategyStatusMsg}</span>
+                                  </div>
+                                )}
+                                {strategyStatus === 'success' && (
+                                  <div className="flex items-center gap-2 p-3 bg-green-50 border border-green-200 rounded-2xl text-green-700 text-xs font-semibold">
+                                    <i className="fas fa-check-circle flex-shrink-0"></i>
+                                    <span>Cargado en Prodline correctamente</span>
+                                  </div>
+                                )}
+                                <button
+                                  onClick={handleStrategyProdlineSubmit}
+                                  disabled={strategyStatus === 'loading' || !strategyPdfUrl || strategyStatus === 'success'}
+                                  className={`w-full font-black py-4 rounded-3xl transition-all text-base flex items-center justify-center gap-3 ${
+                                    strategyStatus === 'loading' || !strategyPdfUrl || strategyStatus === 'success'
+                                      ? 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                                      : 'bg-[#A4D62C] text-white hover:bg-[#8DB525]'
+                                  }`}
+                                >
+                                  {strategyStatus === 'loading'
+                                    ? <><i className="fas fa-spinner fa-spin"></i> Cargando...</>
+                                    : <><i className="fas fa-file-powerpoint"></i> Cargar en Prodline</>
+                                  }
+                                </button>
+                              </div>
+                            )}
                           </div>
                         )}
 
