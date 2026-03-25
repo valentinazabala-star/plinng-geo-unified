@@ -263,25 +263,14 @@ export async function updateProdlineDeliverable(
     errors.push(`PATCH ERR: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  // Intento 3: discard proposal existente → crear nuevo con POST
+  // Intento 3: POST (crear — funciona si el estado ya fue cambiado a TASK_IN_PROGRESS manualmente)
   try {
-    const discardRes = await fetch(
-      `${PRODLINE_BASE}/task-management/proposals/${taskId}/discard`,
-      {
-        method: 'POST',
-        headers: { 'X-Api-Key': apiKey, 'Content-Type': 'application/json', Accept: 'application/json' },
-        body: JSON.stringify({}),
-      },
-    );
-    errors.push(`DISCARD ${discardRes.status}`);
-    if (discardRes.ok) {
-      const res = await fetch(endpoint, { method: 'POST', headers, body: makeFormData() });
-      if (res.ok) return { success: true, imageUploaded };
-      const txt = await res.text();
-      errors.push(`POST-after-discard ${res.status}: ${txt}`);
-    }
+    const res = await fetch(endpoint, { method: 'POST', headers, body: makeFormData() });
+    if (res.ok) return { success: true, imageUploaded };
+    const txt = await res.text();
+    errors.push(`POST ${res.status}: ${txt}`);
   } catch (err: unknown) {
-    errors.push(`DISCARD ERR: ${err instanceof Error ? err.message : String(err)}`);
+    errors.push(`POST ERR: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   return { success: false, imageUploaded, error: errors.join(' | ') };
