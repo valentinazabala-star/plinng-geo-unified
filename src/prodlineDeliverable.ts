@@ -225,34 +225,63 @@ export async function updateProdlineDeliverable(
     { type: 'external_url', content: articleUrl, index: 1 },
   ];
 
-  const formData = new FormData();
   const imageBlob = await downloadDriveImage(driveUrl);
   let imageUploaded = false;
-
   if (imageBlob) {
-    formData.append('cover_image', imageBlob, 'cover-seo.jpg');
     attachments.push({ type: 'img', index: 2 });
     imageUploaded = true;
   }
-  formData.append('attachments', JSON.stringify(attachments));
+
+  const makeFormData = () => {
+    const fd = new FormData();
+    if (imageBlob) fd.append('cover_image', imageBlob, 'cover-seo.jpg');
+    fd.append('attachments', JSON.stringify(attachments));
+    return fd;
+  };
 
   const endpoint = `${PRODLINE_BASE}/task-management/tasks/${taskId}/deliverable`;
   const headers = { 'X-Api-Key': apiKey, Accept: 'application/json' };
   const errors: string[] = [];
 
-  // Intentar PUT, PATCH y POST en orden
-  for (const method of ['PUT', 'PATCH', 'POST'] as const) {
-    try {
-      const fd = new FormData();
-      if (imageBlob) fd.append('cover_image', imageBlob, 'cover-seo.jpg');
-      fd.append('attachments', JSON.stringify(attachments));
-      const res = await fetch(endpoint, { method, headers, body: fd });
+  // Intento 1: PUT (actualizar existente)
+  try {
+    const res = await fetch(endpoint, { method: 'PUT', headers, body: makeFormData() });
+    if (res.ok) return { success: true, imageUploaded };
+    const txt = await res.text();
+    errors.push(`PUT ${res.status}: ${txt}`);
+  } catch (err: unknown) {
+    errors.push(`PUT ERR: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  // Intento 2: PATCH (actualización parcial)
+  try {
+    const res = await fetch(endpoint, { method: 'PATCH', headers, body: makeFormData() });
+    if (res.ok) return { success: true, imageUploaded };
+    const txt = await res.text();
+    errors.push(`PATCH ${res.status}: ${txt}`);
+  } catch (err: unknown) {
+    errors.push(`PATCH ERR: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  // Intento 3: discard proposal existente → crear nuevo con POST
+  try {
+    const discardRes = await fetch(
+      `${PRODLINE_BASE}/task-management/proposals/${taskId}/discard`,
+      {
+        method: 'POST',
+        headers: { 'X-Api-Key': apiKey, 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({}),
+      },
+    );
+    errors.push(`DISCARD ${discardRes.status}`);
+    if (discardRes.ok) {
+      const res = await fetch(endpoint, { method: 'POST', headers, body: makeFormData() });
       if (res.ok) return { success: true, imageUploaded };
       const txt = await res.text();
-      errors.push(`${method} ${res.status}: ${txt}`);
-    } catch (err: unknown) {
-      errors.push(`${method} ERR: ${err instanceof Error ? err.message : String(err)}`);
+      errors.push(`POST-after-discard ${res.status}: ${txt}`);
     }
+  } catch (err: unknown) {
+    errors.push(`DISCARD ERR: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   return { success: false, imageUploaded, error: errors.join(' | ') };

@@ -1261,6 +1261,8 @@ const App: React.FC = () => {
   const [feedbackStatus, setFeedbackStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [feedbackStatusMsg, setFeedbackStatusMsg] = useState('');
   const feedbackInstructionsRef = React.useRef<string>('');
+  // Para el botón de reintento de Prodline
+  const [feedbackProdlineRetry, setFeedbackProdlineRetry] = useState<{ taskUuid: string; url: string; contentType: ContentType } | null>(null);
 
   // 🧠 Memoria de títulos generados por cuenta (persiste en localStorage entre sesiones)
   const [accountMemory, setAccountMemory] = useState<Record<string, string[]>>(() => {
@@ -4010,24 +4012,50 @@ const App: React.FC = () => {
         : `⚠️ setTaskInProgress falló: ${inProgressResult.error ?? 'error desconocido'} (continuando...)`
       );
 
-      // 7. Prodline sync — actualizar deliverable existente (PUT, con fallback a POST)
+      // 7. Prodline sync — actualizar deliverable existente
       setFeedbackStatusMsg('Sincronizando con Prodline...');
       const proposalResult = await updateProdlineDeliverable(feedbackTaskUuid.trim(), updatedUrl, feedbackContentType, ORBIDI_API_KEY);
       addLog(proposalResult.success
         ? `✅ Deliverable Prodline actualizado (imagen ${proposalResult.imageUploaded ? 'subida' : 'como link'})`
         : `⚠️ Prodline deliverable: ${proposalResult.error}`
       );
-      const assigned = await assignProdlineTask(feedbackTaskUuid.trim(), ORBIDI_API_KEY);
-      addLog(assigned ? '✅ assigned_team: content_factory' : '⚠️ No se pudo asignar equipo');
+
+      if (!proposalResult.success) {
+        // Guardar datos para botón de reintento manual
+        setFeedbackProdlineRetry({ taskUuid: feedbackTaskUuid.trim(), url: updatedUrl, contentType: feedbackContentType });
+        addLog('ℹ️ Puedes reintentar el sync de Prodline con el botón "Reintentar Prodline" después de cambiar el estado manualmente en la plataforma.');
+      } else {
+        setFeedbackProdlineRetry(null);
+        const assigned = await assignProdlineTask(feedbackTaskUuid.trim(), ORBIDI_API_KEY);
+        addLog(assigned ? '✅ assigned_team: content_factory' : '⚠️ No se pudo asignar equipo');
+      }
 
       setFeedbackStatus('success');
       setFeedbackStatusMsg(updatedUrl);
-      addLog('\n✅ FEEDBACK COMPLETADO');
+      addLog('\n✅ FEEDBACK COMPLETADO (WP actualizado)');
 
     } catch (e: any) {
       addLog(`❌ Error: ${e.message}`);
       setFeedbackStatus('error');
       setFeedbackStatusMsg(e.message);
+    }
+  };
+
+  // Reintento manual del sync de Prodline (después de cambiar estado manualmente en la plataforma)
+  const handleProdlineRetry = async () => {
+    if (!feedbackProdlineRetry) return;
+    const { taskUuid, url, contentType } = feedbackProdlineRetry;
+    const ORBIDI_API_KEY = import.meta.env.VITE_ORBIDI_API_KEY;
+    addLog('\n🔄 Reintentando sync Prodline...');
+    const result = await updateProdlineDeliverable(taskUuid, url, contentType, ORBIDI_API_KEY);
+    addLog(result.success
+      ? `✅ Deliverable actualizado (imagen ${result.imageUploaded ? 'subida' : 'como link'})`
+      : `⚠️ Prodline deliverable: ${result.error}`
+    );
+    if (result.success) {
+      const assigned = await assignProdlineTask(taskUuid, ORBIDI_API_KEY);
+      addLog(assigned ? '✅ assigned_team: content_factory' : '⚠️ No se pudo asignar equipo');
+      setFeedbackProdlineRetry(null);
     }
   };
 
@@ -5191,6 +5219,16 @@ const App: React.FC = () => {
                             : <><i className="fas fa-sync-alt"></i> Aplicar Feedback y Actualizar</>
                           }
                         </button>
+
+                        {/* Botón de reintento Prodline */}
+                        {feedbackProdlineRetry && (
+                          <button
+                            onClick={handleProdlineRetry}
+                            className="w-full font-black py-4 rounded-3xl shadow-xl transition-all text-base flex items-center justify-center gap-3 bg-orange-500 text-white hover:bg-orange-600"
+                          >
+                            <i className="fas fa-redo"></i> Reintentar Prodline
+                          </button>
+                        )}
                       </>
                     )}
                   </div>
