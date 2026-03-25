@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "drive:server": "node scripts/google-drive-server.mjs",
     "build": "vite build",
     "preview": "vite preview"
   },

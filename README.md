@@ -74,3 +74,22 @@ export default defineConfig([
 # GEO-2
 # GEO-3
 # geo2
+
+## Google Drive local
+
+This project now includes a local Google Drive server that keeps the service account off the frontend.
+
+1. Configure `.env.server` with `GOOGLE_SERVICE_ACCOUNT_JSON_PATH`.
+2. Start the service with `npm run drive:server`.
+3. During local Vite development, use the proxied routes under `/api/google-drive`.
+
+Available routes:
+
+- `GET /api/google-drive/list?folderId=<id>`
+- `POST /api/google-drive/create-folder`
+- `POST /api/google-drive/upload-text`
+- `POST /api/google-drive/upload-file`
+- `POST /api/google-drive/read-file`
+- `POST /api/google-drive/move-file`
+- `POST /api/google-drive/generate-strategy-pdf`
+- `DELETE /api/google-drive/delete-file`

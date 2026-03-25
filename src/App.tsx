@@ -14,9 +14,10 @@ import {
   generateGmbPost,
   buildGmbImagePromptFn,
   analyzeWebsite,
+  analyzeSeoStrategy,
   applyFeedbackToArticle,
 } from './geminiService';
-import type { GmbPost } from './geminiService';
+import type { GmbPost, SeoStrategyAnalysis } from './geminiService';
 import { buildOnBlogImagePrompt } from './prompts/onBlogPrompt';
 import { buildOffPageImagePrompt } from './prompts/offPagePrompt';
 
@@ -755,6 +756,82 @@ const extractFieldValueFromBriefHTML = (html: string, label: string): string | n
   return m?.[1]?.trim() || null;
 };
 
+const extractStrategyBusinessName = (data: unknown): string | null => {
+  if (!data) return null;
+
+  if (typeof data === 'string') {
+    if (/<[a-z][\s\S]*>/i.test(data)) {
+      const fromHtmlField = extractFieldValueFromBriefHTML(data, 'Nombre del Negocio');
+      if (fromHtmlField) return fromHtmlField;
+
+      const commentMatch = data.match(/FIELD_COMPANY_NAME[\s\S]{0,200}?['"\u2018\u2019\u201C\u201D]value['"\u2018\u2019\u201C\u201D]\s*:\s*['"\u2018\u2019\u201C\u201D]([^'"\u2018\u2019\u201C\u201D\n]+)/i);
+      if (commentMatch?.[1]?.trim()) return commentMatch[1].trim();
+    }
+
+    const textMatch = data.match(/Nombre\s+del\s+Negocio\s*[:\-\n]\s*([^\n<]{2,200})/i);
+    return textMatch?.[1]?.trim() || null;
+  }
+
+  if (typeof data === 'object') {
+    const queue: unknown[] = [data];
+    while (queue.length > 0) {
+      const current = queue.shift();
+      if (!current || typeof current !== 'object') continue;
+
+      for (const [key, value] of Object.entries(current as Record<string, unknown>)) {
+        const keyLc = key.toLowerCase().trim();
+        if (typeof value === 'string' && ['nombre del negocio', 'nombre_del_negocio', 'business_name', 'company_name'].includes(keyLc)) {
+          return value.trim() || null;
+        }
+        if (value && typeof value === 'object') queue.push(value);
+      }
+    }
+  }
+
+  return null;
+};
+
+const extractStrategyWebsite = (data: unknown): string | null => {
+  if (!data) return null;
+
+  if (typeof data === 'string') {
+    if (/<[a-z][\s\S]*>/i.test(data)) {
+      const normalized = data
+        .replace(/&iquest;/gi, '¿')
+        .replace(/&aacute;/gi, 'á')
+        .replace(/&nbsp;/g, ' ');
+      const sectionMatch = normalized.match(/[¿?]?Tienes\s+p[áa]gina\s+web\??([\s\S]{0,3000}?)(?=<h[1-6]\b|<\/form|<\/section|<\/article|$)/i);
+      if (!sectionMatch) return null;
+      const block = sectionMatch[1].replace(/<[^>]+>/g, '\n');
+      return extractWebsiteFromBodyText(block);
+    }
+
+    return extractWebsiteFromBodyText(data);
+  }
+
+  if (typeof data === 'object') {
+    const queue: unknown[] = [data];
+    while (queue.length > 0) {
+      const current = queue.shift();
+      if (!current || typeof current !== 'object') continue;
+
+      for (const [key, value] of Object.entries(current as Record<string, unknown>)) {
+        const keyLc = key.toLowerCase().trim();
+        if (typeof value === 'string' && ['tengo página web', 'tengo pagina web'].includes(keyLc)) {
+          return normalizeWebsiteUrl(value) || extractFirstWebsiteFromText(value);
+        }
+        if (typeof value === 'string' && ['body', 'content', 'contenido', 'text', 'texto', 'description', 'descripcion', 'brief', 'data'].includes(keyLc)) {
+          const found = extractWebsiteFromBodyText(value);
+          if (found) return found;
+        }
+        if (value && typeof value === 'object') queue.push(value);
+      }
+    }
+  }
+
+  return null;
+};
+
 const normalizeCommunicationLanguage = (raw: string | null | undefined): CommunicationLanguage | null => {
   if (!raw) return null;
   const normalized = raw
@@ -1253,6 +1330,7 @@ const App: React.FC = () => {
 
   // 📝 Modo Feedback
   const [isFeedbackMode, setIsFeedbackMode] = useState(false);
+  const [isStrategyMode, setIsStrategyMode] = useState(false);
   const [feedbackAccountUuid, setFeedbackAccountUuid] = useState('');
   const [feedbackContentType, setFeedbackContentType] = useState<ContentType>('on_blog');
   const [feedbackWpUrl, setFeedbackWpUrl] = useState('');
@@ -1278,6 +1356,21 @@ const App: React.FC = () => {
     tokenHeader: string;
     lang: string;
   } | null>(null);
+  const feedbackModeLabel = isStrategyMode ? 'Estrategia' : 'Feedback';
+  const [strategyAccountUuid, setStrategyAccountUuid] = useState('');
+  const [strategyTaskUuid, setStrategyTaskUuid] = useState('');
+  const [strategyDeliverableUrl, setStrategyDeliverableUrl] = useState('');
+  const [strategyStatus, setStrategyStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+  const [strategyStatusMsg, setStrategyStatusMsg] = useState('');
+  const [strategyStep, setStrategyStep] = useState<'form' | 'analysis' | 'no_website' | 'success'>('form');
+  const [strategyBriefSummary, setStrategyBriefSummary] = useState('');
+  const [strategyBusinessName, setStrategyBusinessName] = useState('');
+  const [strategyWebsite, setStrategyWebsite] = useState('');
+  const [strategyLanguageLabel, setStrategyLanguageLabel] = useState('');
+  const [strategyAnalysis, setStrategyAnalysis] = useState<SeoStrategyAnalysis | null>(null);
+  const [strategyPdfStatus, setStrategyPdfStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+  const [strategyPdfUrl, setStrategyPdfUrl] = useState('');
+  const [strategyPdfMsg, setStrategyPdfMsg] = useState('');
 
   // 🧠 Memoria de títulos generados por cuenta (persiste en localStorage entre sesiones)
   const [accountMemory, setAccountMemory] = useState<Record<string, string[]>>(() => {
@@ -4124,6 +4217,175 @@ const App: React.FC = () => {
   };
 
   // 🏭 Producción masiva v2 (formato multi-tipo: on_blog + off_page + gmb por cuenta)
+  const resetStrategyFlow = () => {
+    setStrategyStatus('idle');
+    setStrategyStatusMsg('');
+    setStrategyStep('form');
+    setStrategyTaskUuid('');
+    setStrategyDeliverableUrl('');
+    setStrategyBriefSummary('');
+    setStrategyBusinessName('');
+    setStrategyWebsite('');
+    setStrategyLanguageLabel('');
+    setStrategyAnalysis(null);
+    setStrategyPdfStatus('idle');
+    setStrategyPdfUrl('');
+    setStrategyPdfMsg('');
+  };
+
+  const handleStrategyFlow = async () => {
+    if (!strategyAccountUuid.trim()) {
+      alert('Ingresa el Account UUID / ID del cliente');
+      return;
+    }
+
+    setStrategyStatus('loading');
+    setStrategyStatusMsg('Consultando brief del cliente...');
+    setStrategyAnalysis(null);
+    setStrategyStep('form');
+
+    try {
+      const rawText = await fetchBriefByUuid(strategyAccountUuid.trim());
+      const briefData = rawText.toLowerCase().includes('<!doctype html') || rawText.includes('<html')
+        ? rawText
+        : JSON.parse(rawText);
+
+      const detectedBusinessName = extractStrategyBusinessName(briefData) || '';
+      const detectedWebsite = extractStrategyWebsite(briefData);
+      const detectedLanguage = 'Español';
+      const keywordSeed = detectedBusinessName || 'seo local';
+      const strategyMiniBrief = [
+        detectedBusinessName ? `Nombre del Negocio: ${detectedBusinessName}` : null,
+        detectedWebsite ? `Tengo página web: ${detectedWebsite}` : 'Tengo página web: No'
+      ].filter(Boolean).join('\n');
+
+      setStrategyBusinessName(detectedBusinessName);
+      setStrategyWebsite(detectedWebsite || '');
+      setStrategyLanguageLabel(detectedLanguage);
+      setStrategyBriefSummary(strategyMiniBrief);
+
+      if (!detectedWebsite) {
+        setStrategyStep('no_website');
+        setStrategyStatus('idle');
+        setStrategyStatusMsg('El brief no trae una web válida para analizar.');
+        setStrategyPdfStatus('loading');
+        setStrategyPdfMsg('Generando presentación sin web y exportando PDF...');
+        setStrategyPdfUrl('');
+
+        try {
+          const response = await fetch('/api/google-drive/generate-strategy-no-website-pdf', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              businessName: detectedBusinessName,
+            }),
+          });
+          const data = await response.json();
+          if (!response.ok || !data?.success) {
+            throw new Error(data?.error || 'No se pudo generar el PDF de estrategia sin web');
+          }
+          setStrategyPdfStatus('success');
+          setStrategyPdfUrl(data.localPath || '');
+          setStrategyPdfMsg('PDF sin web generado correctamente y guardado en local.');
+        } catch (pdfError: any) {
+          setStrategyPdfStatus('error');
+          setStrategyPdfMsg(pdfError.message || 'No se pudo generar el PDF sin web.');
+        }
+        return;
+      }
+
+      setStrategyStatusMsg('Analizando la web del cliente con Gemini...');
+      addLog(`🧭 Estrategia SEO: analizando ${detectedWebsite}`);
+      const result = await analyzeSeoStrategy(
+        detectedWebsite,
+        detectedBusinessName || undefined,
+        strategyMiniBrief,
+      );
+
+      setStrategyAnalysis(result);
+      setStrategyStep('analysis');
+      setStrategyStatus('idle');
+      setStrategyStatusMsg('');
+
+      setStrategyPdfStatus('loading');
+      setStrategyPdfMsg('Generando presentación y exportando PDF...');
+      setStrategyPdfUrl('');
+
+      try {
+        const response = await fetch('/api/google-drive/generate-strategy-pdf', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            businessName: detectedBusinessName,
+            websiteUrl: detectedWebsite,
+            analysis: result,
+          }),
+        });
+        const data = await response.json();
+        if (!response.ok || !data?.success) {
+          throw new Error(data?.error || 'No se pudo generar el PDF de estrategia');
+        }
+        setStrategyPdfStatus('success');
+        setStrategyPdfUrl(data.localPath || '');
+        setStrategyPdfMsg('PDF generado correctamente y guardado en local.');
+      } catch (pdfError: any) {
+        setStrategyPdfStatus('error');
+        setStrategyPdfMsg(pdfError.message || 'No se pudo generar el PDF de estrategia.');
+      }
+    } catch (e: any) {
+      setStrategyStatus('error');
+      setStrategyStatusMsg(e.message);
+      setStrategyStep('form');
+    }
+  };
+
+  const handleStrategyProdlineSubmit = async () => {
+    if (!strategyTaskUuid.trim()) {
+      alert('Ingresa el Task UUID');
+      return;
+    }
+    if (!strategyDeliverableUrl.trim()) {
+      alert('Ingresa la URL de la PPT o del entregable');
+      return;
+    }
+
+    const ORBIDI_API_KEY = import.meta.env.VITE_ORBIDI_API_KEY;
+    if (!ORBIDI_API_KEY) {
+      setStrategyStatus('error');
+      setStrategyStatusMsg('VITE_ORBIDI_API_KEY no está configurado.');
+      return;
+    }
+
+    setStrategyStatus('loading');
+    setStrategyStatusMsg('Cargando entregable de estrategia en Prodline...');
+
+    try {
+      const proposalResult = await createProdlineProposal(
+        strategyTaskUuid.trim(),
+        strategyDeliverableUrl.trim(),
+        'on_blog',
+        ORBIDI_API_KEY,
+        'strategy_seo',
+      );
+
+      if (!proposalResult.success) {
+        throw new Error(proposalResult.error || 'No se pudo crear la propuesta en Prodline');
+      }
+
+      const assigned = await assignProdlineTask(strategyTaskUuid.trim(), ORBIDI_API_KEY);
+      addLog(assigned
+        ? '✅ Estrategia cargada en Prodline y asignada a content_factory'
+        : '⚠️ Estrategia cargada en Prodline, pero no se pudo asignar content_factory');
+
+      setStrategyStep('success');
+      setStrategyStatus('success');
+      setStrategyStatusMsg(strategyDeliverableUrl.trim());
+    } catch (e: any) {
+      setStrategyStatus('error');
+      setStrategyStatusMsg(e.message);
+    }
+  };
+
   const startBatchProductionV2 = async () => {
     if (csvRowsV2.length === 0) {
       alert('No hay filas CSV v2 cargadas');
@@ -5144,25 +5406,31 @@ const App: React.FC = () => {
               </div>
 
               <div className="bg-white p-10 rounded-[4rem] shadow-2xl border border-slate-100 mb-8">
-                {/* Tabs: Generar 1 Articulo / Carga Masiva / Feedback */}
+                {/* Tabs: Generar 1 Articulo / Carga Masiva / Feedback / Estrategia */}
                 <div className="flex bg-slate-100 p-1.5 rounded-2xl mb-10">
                   <button
-                    onClick={() => { setIsManualMode(false); setIsFeedbackMode(false); }}
-                    className={`flex-1 py-3 rounded-xl font-black text-[10px] transition-all ${!isManualMode && !isFeedbackMode ? 'bg-white shadow-sm text-[#A4D62C]' : 'text-slate-500'}`}
+                    onClick={() => { setIsManualMode(false); setIsFeedbackMode(false); setIsStrategyMode(false); }}
+                    className={`flex-1 py-3 rounded-xl font-black text-[10px] transition-all ${!isManualMode && !isFeedbackMode && !isStrategyMode ? 'bg-white shadow-sm text-[#A4D62C]' : 'text-slate-500'}`}
                   >
                     GENERAR 1 ARTICULO
                   </button>
                   <button
-                    onClick={() => { setIsManualMode(true); setIsFeedbackMode(false); }}
-                    className={`flex-1 py-3 rounded-xl font-black text-[10px] transition-all ${isManualMode && !isFeedbackMode ? 'bg-white shadow-sm text-[#A4D62C]' : 'text-slate-500'}`}
+                    onClick={() => { setIsManualMode(true); setIsFeedbackMode(false); setIsStrategyMode(false); }}
+                    className={`flex-1 py-3 rounded-xl font-black text-[10px] transition-all ${isManualMode && !isFeedbackMode && !isStrategyMode ? 'bg-white shadow-sm text-[#A4D62C]' : 'text-slate-500'}`}
                   >
                     CARGA MASIVA
                   </button>
                   <button
-                    onClick={() => { setIsFeedbackMode(true); setIsManualMode(false); setFeedbackStatus('idle'); setFeedbackStatusMsg(''); }}
+                    onClick={() => { setIsFeedbackMode(true); setIsStrategyMode(false); setIsManualMode(false); setFeedbackStatus('idle'); setFeedbackStatusMsg(''); }}
                     className={`flex-1 py-3 rounded-xl font-black text-[10px] transition-all ${isFeedbackMode ? 'bg-white shadow-sm text-[#A4D62C]' : 'text-slate-500'}`}
                   >
                     FEEDBACK
+                  </button>
+                  <button
+                    onClick={() => { setIsStrategyMode(true); setIsFeedbackMode(false); setIsManualMode(false); setFeedbackStatus('idle'); setFeedbackStatusMsg(''); }}
+                    className={`flex-1 py-3 rounded-xl font-black text-[10px] transition-all ${isStrategyMode ? 'bg-white shadow-sm text-[#A4D62C]' : 'text-slate-500'}`}
+                  >
+                    ESTRATEGIA
                   </button>
                 </div>
 
@@ -5190,7 +5458,7 @@ const App: React.FC = () => {
                         <button
                           onClick={() => { setFeedbackStatus('idle'); setFeedbackStatusMsg(''); setFeedbackWpUrl(''); setFeedbackText(''); setFeedbackTaskUuid(''); setFeedbackContentType('on_blog'); setFeedbackProdlineRetry(null); setFeedbackStep('form'); setFeedbackPreview(null); }}
                           className="w-full bg-slate-900 text-white font-black py-4 rounded-2xl hover:bg-black transition-all">
-                          Nuevo Feedback
+                          {`Nueva ${feedbackModeLabel}`}
                         </button>
                       </div>
 
@@ -5374,6 +5642,278 @@ const App: React.FC = () => {
                             : <><i className="fas fa-eye"></i> Ver borrador con cambios</>
                           }
                         </button>
+                      </>
+                    )}
+                  </div>
+                ) : isStrategyMode ? (
+                  <div className="space-y-6">
+                    {strategyStep === 'success' ? (
+                      <div className="text-center space-y-4">
+                        <div className="inline-block p-6 bg-green-100 rounded-full">
+                          <i className="fas fa-check-circle text-5xl text-green-600"></i>
+                        </div>
+                        <h3 className="text-2xl font-black text-green-900">Estrategia cargada correctamente</h3>
+                        <a
+                          href={strategyStatusMsg}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="block text-[#A4D62C] hover:underline font-semibold break-all text-sm"
+                        >
+                          {strategyStatusMsg}
+                        </a>
+                        <button
+                          onClick={resetStrategyFlow}
+                          className="w-full bg-slate-900 text-white font-black py-4 rounded-2xl hover:bg-black transition-all"
+                        >
+                          Nueva Estrategia
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="rounded-[2rem] border border-slate-200 bg-slate-50 p-6">
+                          <div className="flex items-start gap-4">
+                            <div className="w-12 h-12 rounded-2xl bg-[#A4D62C]/15 text-[#7A9E1F] flex items-center justify-center text-xl">
+                              <i className="fas fa-sitemap"></i>
+                            </div>
+                            <div className="space-y-2">
+                              <h3 className="text-xl font-black text-slate-900">Estrategia SEO</h3>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="text-[10px] font-black uppercase text-[#A4D62C] mb-3 block tracking-widest">
+                            Account UUID / ID del Cliente
+                          </label>
+                          <input
+                            type="text"
+                            className="w-full px-6 py-4 rounded-2xl bg-slate-50 border-2 border-transparent focus:border-[#A4D62C] outline-none font-mono text-sm"
+                            placeholder="34ad9915-6fdc-4aed-81a9..."
+                            value={strategyAccountUuid}
+                            onChange={e => setStrategyAccountUuid(e.target.value)}
+                          />
+                        </div>
+
+                        {(strategyBusinessName || strategyWebsite || strategyLanguageLabel) && (
+                          <div className="grid md:grid-cols-3 gap-3">
+                            <div className="rounded-2xl border border-slate-200 p-4 bg-white">
+                              <p className="text-[10px] uppercase tracking-widest font-black text-[#A4D62C] mb-2">Nombre comercial</p>
+                              <p className="text-sm font-semibold text-slate-700">{strategyBusinessName || 'No detectado'}</p>
+                            </div>
+                            <div className="rounded-2xl border border-slate-200 p-4 bg-white">
+                              <p className="text-[10px] uppercase tracking-widest font-black text-[#A4D62C] mb-2">Web comercial</p>
+                              <p className="text-sm font-semibold text-slate-700 break-all">{strategyWebsite || 'No disponible'}</p>
+                            </div>
+                            <div className="rounded-2xl border border-slate-200 p-4 bg-white">
+                              <p className="text-[10px] uppercase tracking-widest font-black text-[#A4D62C] mb-2">Idioma detectado</p>
+                              <p className="text-sm font-semibold text-slate-700">{strategyLanguageLabel || 'Sin dato'}</p>
+                            </div>
+                          </div>
+                        )}
+
+                        {strategyBriefSummary && (
+                          <div>
+                            <label className="text-[10px] font-black uppercase text-[#A4D62C] mb-3 block tracking-widest">
+                              Resumen del Brief
+                            </label>
+                            <div className="rounded-2xl bg-slate-50 border border-slate-200 p-5 text-sm text-slate-700 whitespace-pre-wrap max-h-52 overflow-y-auto">
+                              {strategyBriefSummary}
+                            </div>
+                          </div>
+                        )}
+
+                        {strategyStep === 'analysis' && strategyAnalysis && (
+                          <div className="space-y-4">
+                            <div className="rounded-[2rem] border border-emerald-200 bg-emerald-50 p-6">
+                              <div className="flex items-center gap-3 mb-3">
+                                <i className="fas fa-chart-line text-emerald-600 text-xl"></i>
+                                <h4 className="text-lg font-black text-emerald-900">Resultado del análisis SEO</h4>
+                              </div>
+                              <p className="text-sm text-emerald-900 font-semibold">
+                                Gemini respondió las 4 preguntas clave del diagnóstico SEO del sitio.
+                              </p>
+                            </div>
+
+                            <div className="grid md:grid-cols-3 gap-4">
+                              <div className="rounded-2xl border border-slate-200 p-5 bg-white">
+                                <p className="text-[10px] uppercase tracking-widest font-black text-[#A4D62C] mb-2">Visitas al mes</p>
+                                <p className="text-3xl font-black text-slate-900">{strategyAnalysis.monthly_visits}</p>
+                              </div>
+                              <div className="rounded-2xl border border-slate-200 p-5 bg-white">
+                                <p className="text-[10px] uppercase tracking-widest font-black text-[#A4D62C] mb-2">Velocidad de carga</p>
+                                <p className="text-3xl font-black text-slate-900">{strategyAnalysis.site_speed_score}<span className="text-base text-slate-400">/100</span></p>
+                              </div>
+                              <div className="rounded-2xl border border-slate-200 p-5 bg-white">
+                                <p className="text-[10px] uppercase tracking-widest font-black text-[#A4D62C] mb-2">Salud técnica</p>
+                                <p className="text-3xl font-black text-slate-900">{strategyAnalysis.technical_health_score}<span className="text-base text-slate-400">/100</span></p>
+                              </div>
+                            </div>
+
+                            <div className="rounded-2xl border border-slate-200 p-5 bg-white">
+                              <p className="text-[10px] uppercase tracking-widest font-black text-[#A4D62C] mb-3">Top 5 keywords del sitio</p>
+                              <div className="space-y-2">
+                                {strategyAnalysis.top_keywords.map((item, idx) => (
+                                  <div key={`${item.keyword}-${idx}`} className="flex items-center justify-between gap-3 text-sm text-slate-700 rounded-xl bg-slate-50 px-4 py-3">
+                                    <div className="flex gap-3 items-center">
+                                    <span className="w-6 h-6 rounded-full bg-[#A4D62C]/15 text-[#7A9E1F] flex items-center justify-center font-black text-xs">{idx + 1}</span>
+                                      <span className="font-semibold">{item.keyword}</span>
+                                    </div>
+                                    <span className="text-xs font-black text-slate-400">
+                                      {item.position ? `Pos. aprox. ${item.position}` : 'Posición no estimada'}
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+
+                            <div className="rounded-[2rem] border border-slate-200 bg-slate-50 p-6 space-y-4">
+                              <h4 className="text-lg font-black text-slate-900">Presentación y PDF</h4>
+                              {strategyPdfStatus === 'loading' && (
+                                <div className="flex items-center gap-3 p-4 bg-[#A4D62C]/10 border-2 border-[#A4D62C]/30 rounded-2xl text-[#7A9E1F] text-sm font-semibold">
+                                  <i className="fas fa-spinner fa-spin flex-shrink-0"></i>
+                                  <span>{strategyPdfMsg}</span>
+                                </div>
+                              )}
+                              {strategyPdfStatus === 'success' && (
+                                <div className="space-y-3">
+                                  <div className="flex items-center gap-3 p-4 bg-green-50 border-2 border-green-200 rounded-2xl text-green-700 text-sm font-semibold">
+                                    <i className="fas fa-check-circle flex-shrink-0"></i>
+                                    <span>{strategyPdfMsg}</span>
+                                  </div>
+                                  {strategyPdfUrl && (
+                                    <div className="rounded-2xl bg-white border border-slate-200 p-4">
+                                      <p className="text-[10px] uppercase tracking-widest font-black text-[#A4D62C] mb-2">Ruta local del PDF</p>
+                                      <p className="text-sm font-mono text-slate-700 break-all">{strategyPdfUrl}</p>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                              {strategyPdfStatus === 'error' && (
+                                <div className="flex items-start gap-3 p-4 bg-red-50 border-2 border-red-200 rounded-2xl text-red-700 text-sm">
+                                  <i className="fas fa-exclamation-circle mt-0.5 flex-shrink-0"></i>
+                                  <span>{strategyPdfMsg}</span>
+                                </div>
+                              )}
+                            </div>
+
+                            <div className="rounded-[2rem] border border-slate-200 bg-slate-50 p-6 space-y-4">
+                              <h4 className="text-lg font-black text-slate-900">Cargar PPT / entregable en Prodline</h4>
+                              <div>
+                                <label className="text-[10px] font-black uppercase text-[#A4D62C] mb-2 block tracking-widest">URL de la PPT o del entregable</label>
+                                <input
+                                  type="url"
+                                  className="w-full px-5 py-4 rounded-2xl bg-white border-2 border-transparent focus:border-[#A4D62C] outline-none font-mono text-sm"
+                                  placeholder="https://drive.google.com/... o URL pública del entregable"
+                                  value={strategyDeliverableUrl}
+                                  onChange={e => setStrategyDeliverableUrl(e.target.value)}
+                                />
+                              </div>
+                              <div>
+                                <label className="text-[10px] font-black uppercase text-[#A4D62C] mb-2 block tracking-widest">Task UUID</label>
+                                <input
+                                  type="text"
+                                  className="w-full px-5 py-4 rounded-2xl bg-white border-2 border-transparent focus:border-[#A4D62C] outline-none font-mono text-sm"
+                                  placeholder="uuid de la tarea en Prodline..."
+                                  value={strategyTaskUuid}
+                                  onChange={e => setStrategyTaskUuid(e.target.value)}
+                                />
+                              </div>
+                              <button
+                                onClick={handleStrategyProdlineSubmit}
+                                disabled={strategyStatus === 'loading'}
+                                className={`w-full font-black py-5 rounded-3xl transition-all text-lg flex items-center justify-center gap-3 ${
+                                  strategyStatus === 'loading' ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-[#A4D62C] text-white hover:bg-[#8DB525]'
+                                }`}
+                              >
+                                {strategyStatus === 'loading'
+                                  ? <><i className="fas fa-spinner fa-spin"></i> Cargando estrategia...</>
+                                  : <><i className="fas fa-file-powerpoint"></i> Cargar Estrategia en Prodline</>
+                                }
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        {strategyStep === 'no_website' && (
+                          <div className="rounded-[2rem] border border-amber-200 bg-amber-50 p-6 space-y-4">
+                            <div className="flex items-center gap-3">
+                              <i className="fas fa-globe text-amber-600 text-xl"></i>
+                              <h4 className="text-lg font-black text-amber-900">El cliente no tiene web disponible</h4>
+                            </div>
+                            <p className="text-sm text-amber-900">
+                              No es posible desarrollar correctamente la estrategia de posicionamiento SEO sin una web del cliente. El flujo alterno queda en espera hasta recibir la URL oficial del sitio.
+                            </p>
+                            <div className="rounded-2xl bg-white/80 border border-amber-200 p-4 text-sm text-amber-900">
+                              {strategyBusinessName
+                                ? `Cliente detectado: ${strategyBusinessName}.`
+                                : 'Cliente detectado sin nombre comercial claro.'} Comparte con el cliente que necesitamos su web para continuar el análisis estratégico.
+                            </div>
+
+                            {strategyPdfStatus === 'loading' && (
+                              <div className="flex items-center gap-3 p-4 bg-white border-2 border-amber-200 rounded-2xl text-amber-900 text-sm font-semibold">
+                                <i className="fas fa-spinner fa-spin flex-shrink-0"></i>
+                                <span>{strategyPdfMsg}</span>
+                              </div>
+                            )}
+
+                            {strategyPdfStatus === 'success' && (
+                              <div className="space-y-3">
+                                <div className="flex items-center gap-3 p-4 bg-green-50 border-2 border-green-200 rounded-2xl text-green-700 text-sm font-semibold">
+                                  <i className="fas fa-check-circle flex-shrink-0"></i>
+                                  <span>{strategyPdfMsg}</span>
+                                </div>
+                                {strategyPdfUrl && (
+                                  <div className="rounded-2xl bg-white border border-amber-200 p-4">
+                                    <p className="text-[10px] uppercase tracking-widest font-black text-[#A4D62C] mb-2">Ruta local del PDF</p>
+                                    <p className="text-sm font-mono text-slate-700 break-all">{strategyPdfUrl}</p>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+
+                            {strategyPdfStatus === 'error' && (
+                              <div className="flex items-start gap-3 p-4 bg-red-50 border-2 border-red-200 rounded-2xl text-red-700 text-sm">
+                                <i className="fas fa-exclamation-circle mt-0.5 flex-shrink-0"></i>
+                                <span>{strategyPdfMsg}</span>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {strategyStatus === 'error' && (
+                          <div className="flex items-start gap-3 p-4 bg-red-50 border-2 border-red-200 rounded-2xl text-red-700 text-sm">
+                            <i className="fas fa-exclamation-circle mt-0.5 flex-shrink-0"></i>
+                            <span>{strategyStatusMsg}</span>
+                          </div>
+                        )}
+
+                        {strategyStatus === 'loading' && strategyStep === 'form' && (
+                          <div className="flex items-center gap-3 p-4 bg-[#A4D62C]/10 border-2 border-[#A4D62C]/30 rounded-2xl text-[#7A9E1F] text-sm font-semibold">
+                            <i className="fas fa-spinner fa-spin flex-shrink-0"></i>
+                            <span>{strategyStatusMsg}</span>
+                          </div>
+                        )}
+
+                        <div className="flex gap-3">
+                          <button
+                            onClick={resetStrategyFlow}
+                            className="flex-1 py-4 rounded-2xl border-2 border-slate-200 text-slate-600 font-black text-sm hover:border-slate-400 transition-all"
+                          >
+                            Reiniciar
+                          </button>
+                          <button
+                            onClick={handleStrategyFlow}
+                            disabled={strategyStatus === 'loading'}
+                            className={`flex-1 font-black py-4 rounded-2xl transition-all text-sm flex items-center justify-center gap-3 ${
+                              strategyStatus === 'loading' ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-slate-900 text-white hover:bg-black'
+                            }`}
+                          >
+                            {strategyStatus === 'loading'
+                              ? <><i className="fas fa-spinner fa-spin"></i> Procesando brief...</>
+                              : <><i className="fas fa-search"></i> Crear Estrategia SEO</>
+                            }
+                          </button>
+                        </div>
                       </>
                     )}
                   </div>

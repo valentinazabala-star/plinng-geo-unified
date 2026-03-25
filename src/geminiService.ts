@@ -44,6 +44,18 @@ export interface PickBestWordPressCategoryParams {
   allowedCategories: string[];
 }
 
+export interface SeoKeywordInsight {
+  keyword: string;
+  position?: number | null;
+}
+
+export interface SeoStrategyAnalysis {
+  monthly_visits: number;
+  site_speed_score: number;
+  technical_health_score: number;
+  top_keywords: SeoKeywordInsight[];
+}
+
 const MODELS = {
   PRO: "gemini-2.5-flash",
   FLASH: "gemini-2.5-flash",
@@ -1257,6 +1269,85 @@ Devuelve ÚNICAMENTE el siguiente JSON, sin texto adicional:
     return parsed;
   }
 
+  async analyzeSeoStrategy(
+    websiteUrl: string,
+    businessName?: string,
+    extraContext?: string,
+  ): Promise<SeoStrategyAnalysis> {
+    const prompt = `Eres un especialista SEO senior. Analiza el sitio web indicado y responde ÚNICAMENTE estas 4 preguntas en formato JSON estricto.
+
+DATOS DE ENTRADA:
+- URL del sitio web: ${websiteUrl}
+- Nombre del negocio: ${businessName || 'No especificado'}${extraContext ? `\n- Contexto adicional: ${extraContext}` : ''}
+
+OBJETIVO:
+Debes estimar métricas SEO realistas y accionables del sitio. Si no puedes acceder al sitio directamente, infiere una estimación razonable a partir de la URL, el negocio y el contexto.
+
+PREGUNTAS A RESPONDER:
+1. ¿Cuántas visitas tiene el sitio web al mes?
+   - Devuelve un número entero
+2. ¿Cuál es la puntuación de 0 a 100 de la velocidad de carga del sitio?
+   - Devuelve un número entero entre 0 y 100
+3. ¿Cuál es la salud técnica de 0 a 100 del sitio web?
+   - Devuelve un número entero entre 0 y 100
+4. ¿Cuáles son las 5 palabras clave que más usan los usuarios en los motores de búsqueda para que el sitio web aparezca en los resultados?
+   - Devuelve exactamente 5 keywords
+   - Si es posible, incluye la posición aproximada
+
+REGLAS OBLIGATORIAS:
+- Devuelve SOLO JSON válido.
+- "monthly_visits" debe ser entero.
+- "site_speed_score" debe ser entero de 0 a 100.
+- "technical_health_score" debe ser entero de 0 a 100.
+- "top_keywords" debe tener exactamente 5 elementos.
+- Cada elemento de "top_keywords" debe incluir "keyword".
+- "position" debe ser entero positivo o null.
+- No añadas explicaciones, notas ni texto fuera del JSON.
+
+Devuelve exactamente este esquema:
+{
+  "monthly_visits": 1200,
+  "site_speed_score": 72,
+  "technical_health_score": 68,
+  "top_keywords": [
+    { "keyword": "keyword 1", "position": 8 },
+    { "keyword": "keyword 2", "position": 14 },
+    { "keyword": "keyword 3", "position": 5 },
+    { "keyword": "keyword 4", "position": null },
+    { "keyword": "keyword 5", "position": 21 }
+  ]
+}`;
+
+    const text = await this.generateText({
+      model: MODELS.FLASH,
+      prompt,
+      temperature: 0.2,
+    });
+
+    const parsed = this.extractJSON<SeoStrategyAnalysis>(text);
+    if (!parsed) {
+      throw new Error('Gemini no pudo generar un análisis SEO válido.');
+    }
+
+    const sanitized: SeoStrategyAnalysis = {
+      monthly_visits: Math.max(0, Math.round(Number(parsed.monthly_visits) || 0)),
+      site_speed_score: Math.max(0, Math.min(100, Math.round(Number(parsed.site_speed_score) || 0))),
+      technical_health_score: Math.max(0, Math.min(100, Math.round(Number(parsed.technical_health_score) || 0))),
+      top_keywords: Array.isArray(parsed.top_keywords)
+        ? parsed.top_keywords.slice(0, 5).map((item) => ({
+          keyword: String(item?.keyword || '').trim(),
+          position: item?.position == null ? null : Math.max(1, Math.round(Number(item.position) || 1)),
+        })).filter(item => item.keyword.length > 0)
+        : [],
+    };
+
+    if (sanitized.top_keywords.length !== 5) {
+      throw new Error('Gemini no devolvió exactamente 5 keywords.');
+    }
+
+    return sanitized;
+  }
+
   /**
    * Aplica el feedback del cliente sobre un artículo existente.
    * Lee el HTML actual y el feedback, edita quirúrgicamente solo lo necesario
@@ -1355,6 +1446,8 @@ export const generateImageRaw =
   geminiService.generateImageRaw.bind(geminiService);
 export const analyzeWebsite =
   geminiService.analyzeWebsite.bind(geminiService);
+export const analyzeSeoStrategy =
+  geminiService.analyzeSeoStrategy.bind(geminiService);
 export const applyFeedbackToArticle =
   geminiService.applyFeedbackToArticle.bind(geminiService);
 
