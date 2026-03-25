@@ -4288,9 +4288,11 @@ const App: React.FC = () => {
               businessName: detectedBusinessName,
             }),
           });
-          const data = await response.json();
+          const rawBody = await response.text();
+          let data: any = {};
+          try { data = JSON.parse(rawBody); } catch { /* servidor no disponible */ }
           if (!response.ok || !data?.success) {
-            throw new Error(data?.error || 'No se pudo generar el PDF de estrategia sin web');
+            throw new Error(data?.error || (response.ok ? 'Respuesta inválida del servidor' : `Servidor no disponible (${response.status}) — inicia el servidor local`));
           }
           setStrategyPdfStatus('success');
           setStrategyPdfUrl(data.localPath || '');
@@ -4329,9 +4331,11 @@ const App: React.FC = () => {
             analysis: result,
           }),
         });
-        const data = await response.json();
+        const rawBody = await response.text();
+        let data: any = {};
+        try { data = JSON.parse(rawBody); } catch { /* servidor no disponible */ }
         if (!response.ok || !data?.success) {
-          throw new Error(data?.error || 'No se pudo generar el PDF de estrategia');
+          throw new Error(data?.error || (response.ok ? 'Respuesta inválida del servidor' : `Servidor no disponible (${response.status}) — inicia el servidor local`));
         }
         setStrategyPdfStatus('success');
         setStrategyPdfUrl(data.localPath || '');
