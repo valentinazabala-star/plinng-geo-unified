@@ -238,30 +238,24 @@ export async function updateProdlineDeliverable(
 
   const endpoint = `${PRODLINE_BASE}/task-management/tasks/${taskId}/deliverable`;
   const headers = { 'X-Api-Key': apiKey, Accept: 'application/json' };
+  const errors: string[] = [];
 
-  // Intentar PUT primero (actualizar existente)
-  try {
-    const resPut = await fetch(endpoint, { method: 'PUT', headers, body: formData });
-    if (resPut.ok) return { success: true, imageUploaded };
-    const bodyPut = await resPut.text();
-    // Caer en POST para 404/405 (no soportado) y 400 (estado inválido — intentar igualmente)
-    if (resPut.status !== 404 && resPut.status !== 405 && resPut.status !== 400) {
-      return { success: false, imageUploaded, error: `PUT ${resPut.status}: ${bodyPut}` };
+  // Intentar PUT, PATCH y POST en orden
+  for (const method of ['PUT', 'PATCH', 'POST'] as const) {
+    try {
+      const fd = new FormData();
+      if (imageBlob) fd.append('cover_image', imageBlob, 'cover-seo.jpg');
+      fd.append('attachments', JSON.stringify(attachments));
+      const res = await fetch(endpoint, { method, headers, body: fd });
+      if (res.ok) return { success: true, imageUploaded };
+      const txt = await res.text();
+      errors.push(`${method} ${res.status}: ${txt}`);
+    } catch (err: unknown) {
+      errors.push(`${method} ERR: ${err instanceof Error ? err.message : String(err)}`);
     }
-  } catch { /* red error, intentar POST */ }
-
-  // Fallback: POST
-  try {
-    const formData2 = new FormData();
-    if (imageBlob) formData2.append('cover_image', imageBlob, 'cover-seo.jpg');
-    formData2.append('attachments', JSON.stringify(attachments));
-    const resPost = await fetch(endpoint, { method: 'POST', headers, body: formData2 });
-    if (resPost.ok) return { success: true, imageUploaded };
-    const bodyPost = await resPost.text();
-    return { success: false, imageUploaded, error: `POST ${resPost.status}: ${bodyPost}` };
-  } catch (err: unknown) {
-    return { success: false, imageUploaded, error: err instanceof Error ? err.message : String(err) };
   }
+
+  return { success: false, imageUploaded, error: errors.join(' | ') };
 }
 
 /**
