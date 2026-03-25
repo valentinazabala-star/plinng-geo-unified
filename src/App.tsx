@@ -2334,7 +2334,8 @@ const App: React.FC = () => {
         await handleDataAcquisition(rawText);
       } else {
         addLog("ÉXITO: Datos JSON recibidos");
-        const data = JSON.parse(rawText);
+        let data: any;
+        try { data = JSON.parse(rawText); } catch { data = rawText; }
         await handleDataAcquisition(data);
       }
     } catch (e: any) {
@@ -3861,10 +3862,11 @@ const App: React.FC = () => {
       if (rawText.toLowerCase().includes("<!doctype html") || rawText.includes("<html")) {
         detectedWebsite = await handleDataAcquisition(rawText, true);
       } else {
-        const data = JSON.parse(rawText);
+        let data: any;
+        try { data = JSON.parse(rawText); } catch { data = rawText; }
         detectedWebsite = await handleDataAcquisition(data, true);
       }
-      
+
       // Guardar el website detectado para esta cuenta
       if (detectedWebsite) {
         setClientWebsite(detectedWebsite);
@@ -4710,10 +4712,11 @@ const App: React.FC = () => {
       if (rawText.toLowerCase().includes("<!doctype html") || rawText.includes("<html")) {
         detectedWebsite = await handleDataAcquisition(rawText, true);
       } else {
-        const data = JSON.parse(rawText);
+        let data: any;
+        try { data = JSON.parse(rawText); } catch { data = rawText; }
         detectedWebsite = await handleDataAcquisition(data, true);
       }
-      
+
       if (detectedWebsite) {
         clientWebsiteRef.current = detectedWebsite; // Guardar en ref
         setClientWebsite(detectedWebsite);
