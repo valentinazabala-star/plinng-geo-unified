@@ -244,8 +244,8 @@ export async function updateProdlineDeliverable(
     const resPut = await fetch(endpoint, { method: 'PUT', headers, body: formData });
     if (resPut.ok) return { success: true, imageUploaded };
     const bodyPut = await resPut.text();
-    // Si PUT no soportado (404/405), caer en POST
-    if (resPut.status !== 404 && resPut.status !== 405) {
+    // Caer en POST para 404/405 (no soportado) y 400 (estado inválido — intentar igualmente)
+    if (resPut.status !== 404 && resPut.status !== 405 && resPut.status !== 400) {
       return { success: false, imageUploaded, error: `PUT ${resPut.status}: ${bodyPut}` };
     }
   } catch { /* red error, intentar POST */ }
@@ -266,30 +266,45 @@ export async function updateProdlineDeliverable(
 
 /**
  * Cambia el estado de una tarea en Prodline a TASK_IN_PROGRESS.
- * Se usa en el flujo de feedback antes de hacer el sync del deliverable.
- *
- * Endpoint: PATCH /task-management/tasks/{taskUuid}
+ * Intenta PATCH primero (transición de estado), luego POST /properties como fallback.
+ * Retorna { ok, error } para poder loggear el fallo exacto.
  */
 export async function setTaskInProgress(
   taskUuid: string,
   apiKey: string,
-): Promise<boolean> {
+): Promise<{ ok: boolean; error?: string }> {
+  const headers = {
+    'X-Api-Key': apiKey,
+    'Content-Type': 'application/json',
+    Accept: 'application/json',
+  };
+  const body = JSON.stringify({ status: 'TASK_IN_PROGRESS' });
+
+  // Intento 1: PATCH /task/task-management/tasks/{uuid}
+  try {
+    const res = await fetch(
+      `${PRODLINE_BASE}/task/task-management/tasks/${taskUuid}`,
+      { method: 'PATCH', headers, body },
+    );
+    if (res.ok) return { ok: true };
+    const txt = await res.text();
+    // Si es 404/405/422, caer en siguiente intento
+    if (res.status !== 404 && res.status !== 405 && res.status !== 422) {
+      return { ok: false, error: `PATCH ${res.status}: ${txt}` };
+    }
+  } catch { /* red error, continuar */ }
+
+  // Intento 2: POST /task/task-management/tasks/{uuid}/properties
   try {
     const res = await fetch(
       `${PRODLINE_BASE}/task/task-management/tasks/${taskUuid}/properties`,
-      {
-        method: 'POST',
-        headers: {
-          'X-Api-Key': apiKey,
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-        },
-        body: JSON.stringify({ status: 'TASK_IN_PROGRESS' }),
-      },
+      { method: 'POST', headers, body },
     );
-    return res.ok;
-  } catch {
-    return false;
+    if (res.ok) return { ok: true };
+    const txt = await res.text();
+    return { ok: false, error: `POST-props ${res.status}: ${txt}` };
+  } catch (err: unknown) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
 

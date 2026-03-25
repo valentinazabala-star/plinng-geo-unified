@@ -4003,8 +4003,11 @@ const App: React.FC = () => {
       // 6. Cambiar status a TASK_IN_PROGRESS antes del sync
       setFeedbackStatusMsg('Cambiando estado a TASK_IN_PROGRESS...');
       const ORBIDI_API_KEY = import.meta.env.VITE_ORBIDI_API_KEY;
-      const inProgressOk = await setTaskInProgress(feedbackTaskUuid.trim(), ORBIDI_API_KEY);
-      addLog(inProgressOk ? '✅ Estado → TASK_IN_PROGRESS' : '⚠️ No se pudo cambiar el estado (continuando...)');
+      const inProgressResult = await setTaskInProgress(feedbackTaskUuid.trim(), ORBIDI_API_KEY);
+      addLog(inProgressResult.ok
+        ? '✅ Estado → TASK_IN_PROGRESS'
+        : `⚠️ setTaskInProgress falló: ${inProgressResult.error ?? 'error desconocido'} (continuando...)`
+      );
 
       // 7. Prodline sync — actualizar deliverable existente (PUT, con fallback a POST)
       setFeedbackStatusMsg('Sincronizando con Prodline...');
