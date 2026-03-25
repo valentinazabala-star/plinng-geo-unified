@@ -4288,15 +4288,30 @@ const App: React.FC = () => {
               businessName: detectedBusinessName,
             }),
           });
-          const rawBody = await response.text();
-          let data: any = {};
-          try { data = JSON.parse(rawBody); } catch { /* servidor no disponible */ }
-          if (!response.ok || !data?.success) {
-            throw new Error(data?.error || (response.ok ? 'Respuesta inválida del servidor' : `Servidor no disponible (${response.status}) — inicia el servidor local`));
+          if (!response.ok) {
+            const rawBody = await response.text();
+            let errData: any = {};
+            try { errData = JSON.parse(rawBody); } catch { /* ignore */ }
+            throw new Error(errData?.error || `Error ${response.status}`);
           }
-          setStrategyPdfStatus('success');
-          setStrategyPdfUrl(data.localPath || '');
-          setStrategyPdfMsg('PDF sin web generado correctamente y guardado en local.');
+          const ct = response.headers.get('content-type') || '';
+          if (ct.includes('application/pdf')) {
+            const blob = await response.blob();
+            const fileName = response.headers.get('x-file-name') || 'estrategia-sin-web.pdf';
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = fileName; a.click();
+            setTimeout(() => URL.revokeObjectURL(url), 10000);
+            setStrategyPdfStatus('success');
+            setStrategyPdfUrl('');
+            setStrategyPdfMsg(`PDF descargado: ${fileName}`);
+          } else {
+            const data = await response.json();
+            if (!data?.success) throw new Error(data?.error || 'Respuesta inválida del servidor');
+            setStrategyPdfStatus('success');
+            setStrategyPdfUrl(data.driveUrl || data.localPath || '');
+            setStrategyPdfMsg('PDF sin web generado correctamente.');
+          }
         } catch (pdfError: any) {
           setStrategyPdfStatus('error');
           setStrategyPdfMsg(pdfError.message || 'No se pudo generar el PDF sin web.');
@@ -4331,15 +4346,30 @@ const App: React.FC = () => {
             analysis: result,
           }),
         });
-        const rawBody = await response.text();
-        let data: any = {};
-        try { data = JSON.parse(rawBody); } catch { /* servidor no disponible */ }
-        if (!response.ok || !data?.success) {
-          throw new Error(data?.error || (response.ok ? 'Respuesta inválida del servidor' : `Servidor no disponible (${response.status}) — inicia el servidor local`));
+        if (!response.ok) {
+          const rawBody = await response.text();
+          let errData: any = {};
+          try { errData = JSON.parse(rawBody); } catch { /* ignore */ }
+          throw new Error(errData?.error || `Error ${response.status}`);
         }
-        setStrategyPdfStatus('success');
-        setStrategyPdfUrl(data.localPath || '');
-        setStrategyPdfMsg('PDF generado correctamente y guardado en local.');
+        const ct = response.headers.get('content-type') || '';
+        if (ct.includes('application/pdf')) {
+          const blob = await response.blob();
+          const fileName = response.headers.get('x-file-name') || 'estrategia-seo.pdf';
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url; a.download = fileName; a.click();
+          setTimeout(() => URL.revokeObjectURL(url), 10000);
+          setStrategyPdfStatus('success');
+          setStrategyPdfUrl('');
+          setStrategyPdfMsg(`PDF descargado: ${fileName}`);
+        } else {
+          const data = await response.json();
+          if (!data?.success) throw new Error(data?.error || 'Respuesta inválida del servidor');
+          setStrategyPdfStatus('success');
+          setStrategyPdfUrl(data.driveUrl || data.localPath || '');
+          setStrategyPdfMsg('PDF generado correctamente.');
+        }
       } catch (pdfError: any) {
         setStrategyPdfStatus('error');
         setStrategyPdfMsg(pdfError.message || 'No se pudo generar el PDF de estrategia.');
@@ -5798,8 +5828,8 @@ const App: React.FC = () => {
                                   </div>
                                   {strategyPdfUrl && (
                                     <div className="rounded-2xl bg-white border border-slate-200 p-4">
-                                      <p className="text-[10px] uppercase tracking-widest font-black text-[#A4D62C] mb-2">Ruta local del PDF</p>
-                                      <p className="text-sm font-mono text-slate-700 break-all">{strategyPdfUrl}</p>
+                                      <p className="text-[10px] uppercase tracking-widest font-black text-[#A4D62C] mb-2">PDF en Google Drive</p>
+                                      <a href={strategyPdfUrl} target="_blank" rel="noopener noreferrer" className="text-sm text-blue-600 hover:underline break-all">{strategyPdfUrl}</a>
                                     </div>
                                   )}
                                 </div>
@@ -5880,8 +5910,8 @@ const App: React.FC = () => {
                                 </div>
                                 {strategyPdfUrl && (
                                   <div className="rounded-2xl bg-white border border-amber-200 p-4">
-                                    <p className="text-[10px] uppercase tracking-widest font-black text-[#A4D62C] mb-2">Ruta local del PDF</p>
-                                    <p className="text-sm font-mono text-slate-700 break-all">{strategyPdfUrl}</p>
+                                    <p className="text-[10px] uppercase tracking-widest font-black text-[#A4D62C] mb-2">PDF en Google Drive</p>
+                                    <a href={strategyPdfUrl} target="_blank" rel="noopener noreferrer" className="text-sm text-blue-600 hover:underline break-all">{strategyPdfUrl}</a>
                                   </div>
                                 )}
                               </div>
