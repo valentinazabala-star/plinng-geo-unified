@@ -276,9 +276,9 @@ export async function setTaskInProgress(
 ): Promise<boolean> {
   try {
     const res = await fetch(
-      `${PRODLINE_BASE}/task-management/tasks/${taskUuid}`,
+      `${PRODLINE_BASE}/task/task-management/tasks/${taskUuid}/properties`,
       {
-        method: 'PATCH',
+        method: 'POST',
         headers: {
           'X-Api-Key': apiKey,
           'Content-Type': 'application/json',
