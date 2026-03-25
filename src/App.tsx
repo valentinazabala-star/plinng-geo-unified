@@ -1371,6 +1371,18 @@ const App: React.FC = () => {
   const [strategyPdfUrl, setStrategyPdfUrl] = useState('');
   const [strategyPdfMsg, setStrategyPdfMsg] = useState('');
 
+  // ── Estrategia Masiva ──────────────────────────────────────────────────────
+  const [isBatchStrategyMode, setIsBatchStrategyMode] = useState(false);
+  const [batchStrategyRows, setBatchStrategyRows] = useState<Array<{ account_uuid: string; task_uuid: string }>>([]);
+  const [batchStrategyResults, setBatchStrategyResults] = useState<Array<{
+    account_uuid: string; task_uuid: string;
+    status: 'pending' | 'running' | 'done' | 'error';
+    businessName: string; website: string; hasWebsite: boolean;
+    driveUrl: string; error: string;
+  }>>([]);
+  const [batchStrategyRunning, setBatchStrategyRunning] = useState(false);
+  const [batchStrategyCurrentIndex, setBatchStrategyCurrentIndex] = useState(-1);
+
   // 🧠 Memoria de títulos generados por cuenta (persiste en localStorage entre sesiones)
   const [accountMemory, setAccountMemory] = useState<Record<string, string[]>>(() => {
     try {
@@ -4423,6 +4435,103 @@ const App: React.FC = () => {
     }
   };
 
+  // ── Estrategia Masiva ──────────────────────────────────────────────────────
+
+  const parseBatchStrategyCsv = (text: string) => {
+    const lines = text.trim().split('\n').filter(l => l.trim());
+    if (lines.length < 2) return [];
+    const headers = lines[0].split(',').map(h => h.trim().toLowerCase().replace(/['"]/g, ''));
+    const uuidIdx = headers.indexOf('account_uuid');
+    const taskIdx = headers.indexOf('task_uuid');
+    if (uuidIdx === -1) return [];
+    return lines.slice(1).map(line => {
+      const cols = line.split(',').map(c => c.trim().replace(/^["']|["']$/g, ''));
+      return { account_uuid: cols[uuidIdx] || '', task_uuid: taskIdx >= 0 ? (cols[taskIdx] || '') : '' };
+    }).filter(r => r.account_uuid);
+  };
+
+  const processBatchStrategyRowFn = async (row: { account_uuid: string }): Promise<{
+    businessName: string; website: string; hasWebsite: boolean; driveUrl: string;
+  }> => {
+    const rawText = await fetchBriefByUuid(row.account_uuid);
+    let briefData: any;
+    if (rawText.toLowerCase().includes('<!doctype html') || rawText.includes('<html')) {
+      briefData = rawText;
+    } else {
+      try { briefData = JSON.parse(rawText); } catch { briefData = rawText; }
+    }
+    if (typeof briefData === 'string' && !briefData.includes('<') && briefData.length < 200) {
+      throw new Error(`Brief no disponible: ${briefData}`);
+    }
+
+    const businessName = extractStrategyBusinessName(briefData) || '';
+    const website = extractStrategyWebsite(briefData) || '';
+    const miniBrief = [
+      businessName ? `Nombre del Negocio: ${businessName}` : null,
+      website ? `Tengo página web: ${website}` : 'Tengo página web: No',
+    ].filter(Boolean).join('\n');
+
+    if (!website) {
+      const res = await fetch('/api/google-drive/generate-strategy-no-website-pdf', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ businessName }),
+      });
+      if (!res.ok) {
+        const txt = await res.text();
+        let err: any = {}; try { err = JSON.parse(txt); } catch {}
+        throw new Error(err?.error || `Error ${res.status}`);
+      }
+      const ct = res.headers.get('content-type') || '';
+      if (ct.includes('application/pdf')) return { businessName, website: '', hasWebsite: false, driveUrl: '' };
+      const data = await res.json();
+      if (!data?.success) throw new Error(data?.error || 'Respuesta inválida');
+      return { businessName, website: '', hasWebsite: false, driveUrl: data.driveUrl || data.localPath || '' };
+    }
+
+    const analysis = await analyzeSeoStrategy(website, businessName || undefined, miniBrief);
+    const res = await fetch('/api/google-drive/generate-strategy-pdf', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ businessName, websiteUrl: website, analysis }),
+    });
+    if (!res.ok) {
+      const txt = await res.text();
+      let err: any = {}; try { err = JSON.parse(txt); } catch {}
+      throw new Error(err?.error || `Error ${res.status}`);
+    }
+    const ct = res.headers.get('content-type') || '';
+    if (ct.includes('application/pdf')) return { businessName, website, hasWebsite: true, driveUrl: '' };
+    const data = await res.json();
+    if (!data?.success) throw new Error(data?.error || 'Respuesta inválida');
+    return { businessName, website, hasWebsite: true, driveUrl: data.driveUrl || data.localPath || '' };
+  };
+
+  const startBatchStrategy = async () => {
+    if (batchStrategyRows.length === 0) { alert('No hay filas cargadas'); return; }
+    setBatchStrategyRunning(true);
+    type BSResult = { account_uuid: string; task_uuid: string; status: 'pending'|'running'|'done'|'error'; businessName: string; website: string; hasWebsite: boolean; driveUrl: string; error: string; };
+    const results: BSResult[] = batchStrategyRows.map(r => ({
+      ...r, status: 'pending',
+      businessName: '', website: '', hasWebsite: false, driveUrl: '', error: '',
+    }));
+    setBatchStrategyResults([...results]);
+
+    for (let i = 0; i < results.length; i++) {
+      setBatchStrategyCurrentIndex(i);
+      results[i] = { ...results[i], status: 'running' };
+      setBatchStrategyResults([...results]);
+      try {
+        const r = await processBatchStrategyRowFn(batchStrategyRows[i]);
+        results[i] = { ...results[i], ...r, status: 'done' };
+      } catch (e: any) {
+        results[i] = { ...results[i], status: 'error', error: e.message };
+      }
+      setBatchStrategyResults([...results]);
+    }
+
+    setBatchStrategyCurrentIndex(-1);
+    setBatchStrategyRunning(false);
+  };
+
   const startBatchProductionV2 = async () => {
     if (csvRowsV2.length === 0) {
       alert('No hay filas CSV v2 cargadas');
@@ -5447,36 +5556,170 @@ const App: React.FC = () => {
               </div>
 
               <div className="bg-white p-10 rounded-[4rem] shadow-2xl border border-slate-100 mb-8">
-                {/* Tabs: Generar 1 Articulo / Carga Masiva / Feedback / Estrategia */}
-                <div className="flex bg-slate-100 p-1.5 rounded-2xl mb-10">
+                {/* Tabs */}
+                <div className="flex bg-slate-100 p-1.5 rounded-2xl mb-10 flex-wrap gap-y-1">
                   <button
-                    onClick={() => { setIsManualMode(false); setIsFeedbackMode(false); setIsStrategyMode(false); }}
-                    className={`flex-1 py-3 rounded-xl font-black text-[10px] transition-all ${!isManualMode && !isFeedbackMode && !isStrategyMode ? 'bg-white shadow-sm text-[#A4D62C]' : 'text-slate-500'}`}
+                    onClick={() => { setIsManualMode(false); setIsFeedbackMode(false); setIsStrategyMode(false); setIsBatchStrategyMode(false); }}
+                    className={`flex-1 py-3 rounded-xl font-black text-[10px] transition-all ${!isManualMode && !isFeedbackMode && !isStrategyMode && !isBatchStrategyMode ? 'bg-white shadow-sm text-[#A4D62C]' : 'text-slate-500'}`}
                   >
                     GENERAR 1 ARTICULO
                   </button>
                   <button
-                    onClick={() => { setIsManualMode(true); setIsFeedbackMode(false); setIsStrategyMode(false); }}
-                    className={`flex-1 py-3 rounded-xl font-black text-[10px] transition-all ${isManualMode && !isFeedbackMode && !isStrategyMode ? 'bg-white shadow-sm text-[#A4D62C]' : 'text-slate-500'}`}
+                    onClick={() => { setIsManualMode(true); setIsFeedbackMode(false); setIsStrategyMode(false); setIsBatchStrategyMode(false); }}
+                    className={`flex-1 py-3 rounded-xl font-black text-[10px] transition-all ${isManualMode && !isFeedbackMode && !isStrategyMode && !isBatchStrategyMode ? 'bg-white shadow-sm text-[#A4D62C]' : 'text-slate-500'}`}
                   >
                     CARGA MASIVA
                   </button>
                   <button
-                    onClick={() => { setIsFeedbackMode(true); setIsStrategyMode(false); setIsManualMode(false); setFeedbackStatus('idle'); setFeedbackStatusMsg(''); }}
+                    onClick={() => { setIsFeedbackMode(true); setIsStrategyMode(false); setIsManualMode(false); setIsBatchStrategyMode(false); setFeedbackStatus('idle'); setFeedbackStatusMsg(''); }}
                     className={`flex-1 py-3 rounded-xl font-black text-[10px] transition-all ${isFeedbackMode ? 'bg-white shadow-sm text-[#A4D62C]' : 'text-slate-500'}`}
                   >
                     FEEDBACK
                   </button>
                   <button
-                    onClick={() => { setIsStrategyMode(true); setIsFeedbackMode(false); setIsManualMode(false); setFeedbackStatus('idle'); setFeedbackStatusMsg(''); }}
+                    onClick={() => { setIsStrategyMode(true); setIsFeedbackMode(false); setIsManualMode(false); setIsBatchStrategyMode(false); setFeedbackStatus('idle'); setFeedbackStatusMsg(''); }}
                     className={`flex-1 py-3 rounded-xl font-black text-[10px] transition-all ${isStrategyMode ? 'bg-white shadow-sm text-[#A4D62C]' : 'text-slate-500'}`}
                   >
                     ESTRATEGIA
                   </button>
+                  <button
+                    onClick={() => { setIsBatchStrategyMode(true); setIsStrategyMode(false); setIsFeedbackMode(false); setIsManualMode(false); setFeedbackStatus('idle'); setFeedbackStatusMsg(''); }}
+                    className={`flex-1 py-3 rounded-xl font-black text-[10px] transition-all ${isBatchStrategyMode ? 'bg-white shadow-sm text-[#A4D62C]' : 'text-slate-500'}`}
+                  >
+                    ESTRATEGIA MASIVA
+                  </button>
                 </div>
 
-                {/* MODO 3: FEEDBACK */}
-                {isFeedbackMode ? (
+                {/* MODO 5: ESTRATEGIA MASIVA */}
+                {isBatchStrategyMode ? (
+                  <div className="space-y-6">
+                    {/* CSV upload */}
+                    {batchStrategyResults.length === 0 && (
+                      <div className="space-y-4">
+                        <div>
+                          <label className="text-[10px] font-black uppercase text-[#A4D62C] mb-3 block tracking-widest">Cargar CSV</label>
+                          <p className="text-xs text-slate-500 mb-3">Columna requerida: <code className="bg-slate-100 px-1 rounded font-mono">account_uuid</code>. Columna opcional: <code className="bg-slate-100 px-1 rounded font-mono">task_uuid</code> (ignorada por ahora).</p>
+                          <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-slate-300 rounded-2xl cursor-pointer hover:border-[#A4D62C] transition-all bg-slate-50">
+                            <i className="fas fa-file-csv text-3xl text-slate-400 mb-2"></i>
+                            <span className="text-sm text-slate-500 font-semibold">Haz clic para seleccionar el archivo CSV</span>
+                            <input
+                              type="file"
+                              accept=".csv,text/csv"
+                              className="hidden"
+                              onChange={e => {
+                                const file = e.target.files?.[0];
+                                if (!file) return;
+                                const reader = new FileReader();
+                                reader.onload = ev => {
+                                  const text = ev.target?.result as string;
+                                  const rows = parseBatchStrategyCsv(text);
+                                  if (rows.length === 0) { alert('No se encontró la columna account_uuid o el CSV está vacío'); return; }
+                                  setBatchStrategyRows(rows);
+                                  setBatchStrategyResults([]);
+                                };
+                                reader.readAsText(file);
+                              }}
+                            />
+                          </label>
+                        </div>
+
+                        {batchStrategyRows.length > 0 && (
+                          <div className="space-y-4">
+                            <div className="flex items-center justify-between">
+                              <p className="text-sm font-black text-slate-700">{batchStrategyRows.length} cuenta{batchStrategyRows.length !== 1 ? 's' : ''} cargada{batchStrategyRows.length !== 1 ? 's' : ''}</p>
+                              <button onClick={() => { setBatchStrategyRows([]); setBatchStrategyResults([]); }} className="text-xs text-slate-400 hover:text-red-500 transition-colors">Limpiar</button>
+                            </div>
+                            <div className="rounded-2xl border border-slate-200 overflow-hidden">
+                              <table className="w-full text-xs">
+                                <thead><tr className="bg-slate-50"><th className="text-left p-3 font-black text-slate-600">Account UUID</th></tr></thead>
+                                <tbody>
+                                  {batchStrategyRows.slice(0, 5).map((r, i) => (
+                                    <tr key={i} className="border-t border-slate-100"><td className="p-3 font-mono text-slate-700">{r.account_uuid}</td></tr>
+                                  ))}
+                                  {batchStrategyRows.length > 5 && (
+                                    <tr className="border-t border-slate-100"><td className="p-3 text-slate-400 italic">... y {batchStrategyRows.length - 5} más</td></tr>
+                                  )}
+                                </tbody>
+                              </table>
+                            </div>
+                            <button
+                              onClick={startBatchStrategy}
+                              disabled={batchStrategyRunning}
+                              className="w-full font-black py-5 rounded-3xl bg-[#A4D62C] text-white hover:bg-[#8DB525] transition-all text-lg flex items-center justify-center gap-3"
+                            >
+                              <i className="fas fa-rocket"></i> Iniciar Estrategia Masiva
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Progress + Results */}
+                    {batchStrategyResults.length > 0 && (
+                      <div className="space-y-4">
+                        <div className="flex items-center justify-between">
+                          <p className="text-sm font-black text-slate-700">
+                            {batchStrategyRunning
+                              ? <>Procesando cuenta {batchStrategyCurrentIndex + 1} de {batchStrategyResults.length}…</>
+                              : <>{batchStrategyResults.filter(r => r.status === 'done').length} completadas · {batchStrategyResults.filter(r => r.status === 'error').length} con error</>
+                            }
+                          </p>
+                          {!batchStrategyRunning && (
+                            <button onClick={() => { setBatchStrategyRows([]); setBatchStrategyResults([]); }} className="text-xs text-slate-400 hover:text-red-500 transition-colors">Nueva carga</button>
+                          )}
+                        </div>
+
+                        {/* progress bar */}
+                        {batchStrategyRunning && (
+                          <div className="w-full bg-slate-100 rounded-full h-2">
+                            <div
+                              className="bg-[#A4D62C] h-2 rounded-full transition-all"
+                              style={{ width: `${Math.round((batchStrategyResults.filter(r => r.status === 'done' || r.status === 'error').length / batchStrategyResults.length) * 100)}%` }}
+                            />
+                          </div>
+                        )}
+
+                        <div className="rounded-2xl border border-slate-200 overflow-hidden">
+                          <table className="w-full text-xs">
+                            <thead>
+                              <tr className="bg-slate-50 text-left">
+                                <th className="p-3 font-black text-slate-600">#</th>
+                                <th className="p-3 font-black text-slate-600">Account UUID</th>
+                                <th className="p-3 font-black text-slate-600">Negocio</th>
+                                <th className="p-3 font-black text-slate-600">Web</th>
+                                <th className="p-3 font-black text-slate-600">Estado</th>
+                                <th className="p-3 font-black text-slate-600">PDF</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {batchStrategyResults.map((r, i) => (
+                                <tr key={i} className={`border-t border-slate-100 ${r.status === 'running' ? 'bg-[#A4D62C]/5' : ''}`}>
+                                  <td className="p-3 text-slate-400">{i + 1}</td>
+                                  <td className="p-3 font-mono text-slate-600 max-w-[120px] truncate">{r.account_uuid.slice(0, 18)}…</td>
+                                  <td className="p-3 text-slate-700 font-semibold">{r.businessName || '—'}</td>
+                                  <td className="p-3 text-slate-500 max-w-[100px] truncate">{r.website || <span className="text-amber-500">Sin web</span>}</td>
+                                  <td className="p-3">
+                                    {r.status === 'pending' && <span className="text-slate-400">Pendiente</span>}
+                                    {r.status === 'running' && <span className="text-[#A4D62C] font-black flex items-center gap-1"><i className="fas fa-spinner fa-spin text-[10px]"></i> Procesando</span>}
+                                    {r.status === 'done' && <span className="text-green-600 font-black">✓ Listo</span>}
+                                    {r.status === 'error' && <span className="text-red-500 font-black" title={r.error}>✗ Error</span>}
+                                  </td>
+                                  <td className="p-3">
+                                    {r.driveUrl
+                                      ? <a href={r.driveUrl} target="_blank" rel="noopener noreferrer" className="text-blue-600 underline">Ver PDF</a>
+                                      : r.status === 'done' ? <span className="text-slate-400">Descargado</span> : '—'
+                                    }
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ) : /* MODO 3: FEEDBACK */
+                isFeedbackMode ? (
                   <div className="space-y-6">
 
                     {/* ── VISTA: ÉXITO ── */}
