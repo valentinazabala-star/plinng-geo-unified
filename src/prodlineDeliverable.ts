@@ -146,9 +146,13 @@ export async function createProdlineProposal(
   let imageUploaded = false;
 
   if (imageBlob) {
+    // Imagen descargada correctamente → enviar como archivo binario
     formData.append('cover_image', imageBlob, 'cover-seo.jpg');
     attachments.push({ type: 'img', index: 2 });
     imageUploaded = true;
+  } else {
+    // CORS bloqueó la descarga → enviar URL para que el backend la descargue
+    formData.append('cover_image_url', driveUrl);
   }
 
   formData.append('attachments', JSON.stringify(attachments));
@@ -234,7 +238,12 @@ export async function updateProdlineDeliverable(
 
   const makeFormData = () => {
     const fd = new FormData();
-    if (imageBlob) fd.append('cover_image', imageBlob, 'cover-seo.jpg');
+    if (imageBlob) {
+      fd.append('cover_image', imageBlob, 'cover-seo.jpg');
+    } else {
+      // CORS bloqueó la descarga → URL para que el backend descargue server-side
+      fd.append('cover_image_url', driveUrl);
+    }
     fd.append('attachments', JSON.stringify(attachments));
     return fd;
   };
