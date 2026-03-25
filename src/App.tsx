@@ -4006,10 +4006,16 @@ const App: React.FC = () => {
       const inProgressOk = await setTaskInProgress(feedbackTaskUuid.trim(), ORBIDI_API_KEY);
       addLog(inProgressOk ? '✅ Estado → TASK_IN_PROGRESS' : '⚠️ No se pudo cambiar el estado (continuando...)');
 
-      // 7. Prodline sync normal
+      // 7. Prodline sync — para feedback usamos createProdlineProposal + assignProdlineTask
+      // (el webhook /marketing-actions falla si la tarea ya tiene propuesta previa)
       setFeedbackStatusMsg('Sincronizando con Prodline...');
-      const syncResult = await syncMarketingActionDirect(feedbackTaskUuid.trim(), updatedUrl, feedbackContentType, ORBIDI_API_KEY);
-      addLog(syncResult.success ? '✅ Prodline OK' : `⚠️ Prodline: ${syncResult.error}`);
+      const proposalResult = await createProdlineProposal(feedbackTaskUuid.trim(), updatedUrl, feedbackContentType, ORBIDI_API_KEY);
+      addLog(proposalResult.success
+        ? `✅ Propuesta Prodline actualizada (imagen ${proposalResult.imageUploaded ? 'subida' : 'como link'})`
+        : `⚠️ Prodline propuesta: ${proposalResult.error}`
+      );
+      const assigned = await assignProdlineTask(feedbackTaskUuid.trim(), ORBIDI_API_KEY);
+      addLog(assigned ? '✅ assigned_team: content_factory' : '⚠️ No se pudo asignar equipo');
 
       setFeedbackStatus('success');
       setFeedbackStatusMsg(updatedUrl);
