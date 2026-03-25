@@ -1359,7 +1359,6 @@ const App: React.FC = () => {
   const feedbackModeLabel = isStrategyMode ? 'Estrategia' : 'Feedback';
   const [strategyAccountUuid, setStrategyAccountUuid] = useState('');
   const [strategyTaskUuid, setStrategyTaskUuid] = useState('');
-  const [strategyDeliverableUrl, setStrategyDeliverableUrl] = useState('');
   const [strategyStatus, setStrategyStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [strategyStatusMsg, setStrategyStatusMsg] = useState('');
   const [strategyStep, setStrategyStep] = useState<'form' | 'analysis' | 'no_website' | 'success'>('form');
@@ -4224,7 +4223,6 @@ const App: React.FC = () => {
     setStrategyStatusMsg('');
     setStrategyStep('form');
     setStrategyTaskUuid('');
-    setStrategyDeliverableUrl('');
     setStrategyBriefSummary('');
     setStrategyBusinessName('');
     setStrategyWebsite('');
@@ -4386,8 +4384,9 @@ const App: React.FC = () => {
       alert('Ingresa el Task UUID');
       return;
     }
-    if (!strategyDeliverableUrl.trim()) {
-      alert('Ingresa la URL de la PPT o del entregable');
+    if (!strategyPdfUrl) {
+      setStrategyStatus('error');
+      setStrategyStatusMsg('El PDF no tiene URL de Drive. Configura GOOGLE_STRATEGY_OUTPUT_FOLDER_ID en Vercel para que el PDF se suba automáticamente a Drive.');
       return;
     }
 
@@ -4404,7 +4403,7 @@ const App: React.FC = () => {
     try {
       const proposalResult = await createProdlineProposal(
         strategyTaskUuid.trim(),
-        strategyDeliverableUrl.trim(),
+        strategyPdfUrl,
         'on_blog',
         ORBIDI_API_KEY,
         'strategy_seo',
@@ -4421,7 +4420,7 @@ const App: React.FC = () => {
 
       setStrategyStep('success');
       setStrategyStatus('success');
-      setStrategyStatusMsg(strategyDeliverableUrl.trim());
+      setStrategyStatusMsg(strategyPdfUrl);
     } catch (e: any) {
       setStrategyStatus('error');
       setStrategyStatusMsg(e.message);
@@ -5843,17 +5842,18 @@ const App: React.FC = () => {
                             </div>
 
                             <div className="rounded-[2rem] border border-slate-200 bg-slate-50 p-6 space-y-4">
-                              <h4 className="text-lg font-black text-slate-900">Cargar PPT / entregable en Prodline</h4>
-                              <div>
-                                <label className="text-[10px] font-black uppercase text-[#A4D62C] mb-2 block tracking-widest">URL de la PPT o del entregable</label>
-                                <input
-                                  type="url"
-                                  className="w-full px-5 py-4 rounded-2xl bg-white border-2 border-transparent focus:border-[#A4D62C] outline-none font-mono text-sm"
-                                  placeholder="https://drive.google.com/... o URL pública del entregable"
-                                  value={strategyDeliverableUrl}
-                                  onChange={e => setStrategyDeliverableUrl(e.target.value)}
-                                />
-                              </div>
+                              <h4 className="text-lg font-black text-slate-900">Cargar en Prodline</h4>
+                              {strategyPdfUrl ? (
+                                <div className="flex items-start gap-3 p-3 bg-green-50 border border-green-200 rounded-2xl text-green-800 text-xs">
+                                  <i className="fas fa-link mt-0.5 flex-shrink-0"></i>
+                                  <span className="break-all">Entregable: <a href={strategyPdfUrl} target="_blank" rel="noopener noreferrer" className="underline">{strategyPdfUrl}</a></span>
+                                </div>
+                              ) : (
+                                <div className="flex items-start gap-3 p-3 bg-amber-50 border border-amber-200 rounded-2xl text-amber-800 text-xs">
+                                  <i className="fas fa-exclamation-triangle mt-0.5 flex-shrink-0"></i>
+                                  <span>PDF sin URL de Drive. Configura <code className="font-mono bg-amber-100 px-1 rounded">GOOGLE_STRATEGY_OUTPUT_FOLDER_ID</code> para activar el envío automático.</span>
+                                </div>
+                              )}
                               <div>
                                 <label className="text-[10px] font-black uppercase text-[#A4D62C] mb-2 block tracking-widest">Task UUID</label>
                                 <input
@@ -5866,9 +5866,9 @@ const App: React.FC = () => {
                               </div>
                               <button
                                 onClick={handleStrategyProdlineSubmit}
-                                disabled={strategyStatus === 'loading'}
+                                disabled={strategyStatus === 'loading' || !strategyPdfUrl}
                                 className={`w-full font-black py-5 rounded-3xl transition-all text-lg flex items-center justify-center gap-3 ${
-                                  strategyStatus === 'loading' ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-[#A4D62C] text-white hover:bg-[#8DB525]'
+                                  strategyStatus === 'loading' || !strategyPdfUrl ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-[#A4D62C] text-white hover:bg-[#8DB525]'
                                 }`}
                               >
                                 {strategyStatus === 'loading'
