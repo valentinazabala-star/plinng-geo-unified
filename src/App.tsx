@@ -5119,8 +5119,17 @@ const App: React.FC = () => {
                         >
                           {feedbackStatusMsg}
                         </a>
+                        {/* Botón de reintento Prodline — visible en success si el sync falló */}
+                        {feedbackProdlineRetry && (
+                          <button
+                            onClick={handleProdlineRetry}
+                            className="w-full font-black py-4 rounded-2xl shadow transition-all flex items-center justify-center gap-3 bg-orange-500 text-white hover:bg-orange-600"
+                          >
+                            <i className="fas fa-redo"></i> Reintentar sync Prodline
+                          </button>
+                        )}
                         <button
-                          onClick={() => { setFeedbackStatus('idle'); setFeedbackStatusMsg(''); setFeedbackAccountUuid(''); setFeedbackWpUrl(''); setFeedbackText(''); setFeedbackTaskUuid(''); setFeedbackContentType('on_blog'); }}
+                          onClick={() => { setFeedbackStatus('idle'); setFeedbackStatusMsg(''); setFeedbackAccountUuid(''); setFeedbackWpUrl(''); setFeedbackText(''); setFeedbackTaskUuid(''); setFeedbackContentType('on_blog'); setFeedbackProdlineRetry(null); }}
                           className="w-full bg-slate-900 text-white font-black py-4 rounded-2xl hover:bg-black transition-all"
                         >
                           Nuevo Feedback
