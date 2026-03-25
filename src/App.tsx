@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { AppStep } from './types';
 import type { Article, Section, ContentType, ContentContext } from './types';
-import { createProdlineProposal, assignProdlineTask, syncMarketingActionDirect, setTaskInProgress } from './prodlineDeliverable';
+import { createProdlineProposal, assignProdlineTask, syncMarketingActionDirect, setTaskInProgress, updateProdlineDeliverable } from './prodlineDeliverable';
 import {
   generateArticleOutline,
   generateSectionContent,
@@ -4006,13 +4006,12 @@ const App: React.FC = () => {
       const inProgressOk = await setTaskInProgress(feedbackTaskUuid.trim(), ORBIDI_API_KEY);
       addLog(inProgressOk ? '✅ Estado → TASK_IN_PROGRESS' : '⚠️ No se pudo cambiar el estado (continuando...)');
 
-      // 7. Prodline sync — para feedback usamos createProdlineProposal + assignProdlineTask
-      // (el webhook /marketing-actions falla si la tarea ya tiene propuesta previa)
+      // 7. Prodline sync — actualizar deliverable existente (PUT, con fallback a POST)
       setFeedbackStatusMsg('Sincronizando con Prodline...');
-      const proposalResult = await createProdlineProposal(feedbackTaskUuid.trim(), updatedUrl, feedbackContentType, ORBIDI_API_KEY);
+      const proposalResult = await updateProdlineDeliverable(feedbackTaskUuid.trim(), updatedUrl, feedbackContentType, ORBIDI_API_KEY);
       addLog(proposalResult.success
-        ? `✅ Propuesta Prodline actualizada (imagen ${proposalResult.imageUploaded ? 'subida' : 'como link'})`
-        : `⚠️ Prodline propuesta: ${proposalResult.error}`
+        ? `✅ Deliverable Prodline actualizado (imagen ${proposalResult.imageUploaded ? 'subida' : 'como link'})`
+        : `⚠️ Prodline deliverable: ${proposalResult.error}`
       );
       const assigned = await assignProdlineTask(feedbackTaskUuid.trim(), ORBIDI_API_KEY);
       addLog(assigned ? '✅ assigned_team: content_factory' : '⚠️ No se pudo asignar equipo');

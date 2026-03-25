@@ -210,6 +210,61 @@ export interface MarketingActionSyncResult {
 }
 
 /**
+ * Actualiza el deliverable de una tarea existente en Prodline (PUT).
+ * Se usa en el flujo de feedback cuando la tarea ya tiene una propuesta previa.
+ * Si el PUT falla (endpoint no soportado), intenta con POST como fallback.
+ */
+export async function updateProdlineDeliverable(
+  taskId: string,
+  articleUrl: string,
+  contentType: ContentType,
+  apiKey: string,
+): Promise<ProdlineProposalResult> {
+  const driveUrl = resolveDeliverableImageUrl(contentType);
+  const attachments: object[] = [
+    { type: 'external_url', content: articleUrl, index: 1 },
+  ];
+
+  const formData = new FormData();
+  const imageBlob = await downloadDriveImage(driveUrl);
+  let imageUploaded = false;
+
+  if (imageBlob) {
+    formData.append('cover_image', imageBlob, 'cover-seo.jpg');
+    attachments.push({ type: 'img', index: 2 });
+    imageUploaded = true;
+  }
+  formData.append('attachments', JSON.stringify(attachments));
+
+  const endpoint = `${PRODLINE_BASE}/task-management/tasks/${taskId}/deliverable`;
+  const headers = { 'X-Api-Key': apiKey, Accept: 'application/json' };
+
+  // Intentar PUT primero (actualizar existente)
+  try {
+    const resPut = await fetch(endpoint, { method: 'PUT', headers, body: formData });
+    if (resPut.ok) return { success: true, imageUploaded };
+    const bodyPut = await resPut.text();
+    // Si PUT no soportado (404/405), caer en POST
+    if (resPut.status !== 404 && resPut.status !== 405) {
+      return { success: false, imageUploaded, error: `PUT ${resPut.status}: ${bodyPut}` };
+    }
+  } catch { /* red error, intentar POST */ }
+
+  // Fallback: POST
+  try {
+    const formData2 = new FormData();
+    if (imageBlob) formData2.append('cover_image', imageBlob, 'cover-seo.jpg');
+    formData2.append('attachments', JSON.stringify(attachments));
+    const resPost = await fetch(endpoint, { method: 'POST', headers, body: formData2 });
+    if (resPost.ok) return { success: true, imageUploaded };
+    const bodyPost = await resPost.text();
+    return { success: false, imageUploaded, error: `POST ${resPost.status}: ${bodyPost}` };
+  } catch (err: unknown) {
+    return { success: false, imageUploaded, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
  * Cambia el estado de una tarea en Prodline a TASK_IN_PROGRESS.
  * Se usa en el flujo de feedback antes de hacer el sync del deliverable.
  *
