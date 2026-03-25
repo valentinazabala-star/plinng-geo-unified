@@ -14,6 +14,7 @@ import {
   generateGmbPost,
   buildGmbImagePromptFn,
   analyzeWebsite,
+  applyFeedbackToArticle,
 } from './geminiService';
 import type { GmbPost } from './geminiService';
 import { buildOnBlogImagePrompt } from './prompts/onBlogPrompt';
@@ -3919,95 +3920,21 @@ const App: React.FC = () => {
     return result?.success ? { success: true, url: result.url } : { success: false };
   };
 
-  // 📝 Flujo de Feedback: regenera artículo con cambios del cliente y actualiza el post de WP existente
+  // 📝 Flujo de Feedback: lee el artículo existente en WP, aplica el feedback con Gemini
+  // de forma quirúrgica (solo cambia lo necesario) y actualiza el post.
   const handleFeedbackFlow = async () => {
-    if (!feedbackAccountUuid.trim()) { alert('Ingresa el Account UUID del cliente'); return; }
     if (!feedbackWpUrl.trim()) { alert('Ingresa la URL del artículo en WordPress'); return; }
     if (!feedbackText.trim()) { alert('Ingresa el feedback del cliente'); return; }
     if (!feedbackTaskUuid.trim()) { alert('Ingresa el Task UUID'); return; }
 
     setFeedbackStatus('loading');
-    setFeedbackStatusMsg('Obteniendo brief del cliente...');
+    setFeedbackStatusMsg('Localizando artículo en WordPress...');
     addLog('\n========================================');
     addLog('📝 MODO FEEDBACK — Inicio');
     addLog('========================================');
 
     try {
-      // 1. Fetch brief
-      const rawText = await fetchBriefByUuid(feedbackAccountUuid.trim());
-      const briefData = rawText.toLowerCase().includes('<!doctype html') || rawText.includes('<html')
-        ? rawText
-        : JSON.parse(rawText);
-
-      setFeedbackStatusMsg('Procesando brief...');
-      const detectedWebsite = await handleDataAcquisition(briefData, true);
-      if (detectedWebsite) clientWebsiteRef.current = detectedWebsite;
-
-      // 2. Set content type
-      contentTypeRef.current = feedbackContentType;
-      setContentType(feedbackContentType);
-      gmbPostDataRef.current = null;
-      setGmbPostData(null);
-
-      // 3. Generar keywords priorizando el feedback del cliente
-      // El feedback describe exactamente el tema que quiere el cliente → debe dominar las keywords
-      setFeedbackStatusMsg('Generando keywords a partir del feedback...');
-      const briefContext = extractContextFromData(briefData);
-      const lang = communicationLanguageRef.current || communicationLanguage;
-      // Combinamos: feedback primero (mayor peso) + brief como contexto de negocio
-      const feedbackPlusContext = `El cliente solicita específicamente: ${feedbackText.trim()}\n\nContexto del negocio: ${briefContext}`;
-      const genKws = await generateKeywords(feedbackPlusContext, lang);
-      const kws = genKws.length > 0 ? [genKws[0]] : [feedbackText.trim().split(' ').slice(0, 3).join(' ')];
-      setKeywords(kws);
-      originalKeywordsRef.current = kws;
-      addLog(`🔑 Keywords (desde feedback): ${kws.join(', ')}`);
-
-      // 4. Inyectar feedback como instrucción central en el ContentContext
-      // Se pone en proposed_title, main_user_question Y additional_notes para máxima prioridad
-      const feedbackInstruction = `FEEDBACK DEL CLIENTE (aplicar obligatoriamente): ${feedbackText.trim()}`;
-      feedbackInstructionsRef.current = feedbackInstruction;
-      if (contentContextRef.current) {
-        contentContextRef.current = {
-          ...contentContextRef.current,
-          proposed_title: kws[0],
-          primary_keywords: kws,
-          main_user_question: feedbackText.trim(),
-          additional_notes: [feedbackInstruction, contentContextRef.current.additional_notes]
-            .filter(Boolean).join('\n\n'),
-        };
-      } else {
-        contentContextRef.current = {
-          proposed_title: kws[0],
-          primary_keywords: kws,
-          secondary_keywords: [],
-          tags: [],
-          search_intent: 'informational',
-          brand_context_summary: briefContext.slice(0, 300),
-          main_user_question: feedbackText.trim(),
-          suggested_structure: [],
-          additional_notes: feedbackInstruction,
-        };
-      }
-      addLog('🧠 Feedback inyectado como tema principal del artículo');
-
-      // 5. Generar contenido según el tipo (GMB tiene flujo diferente a on_blog/off_page)
-      setBatchProgress(prev => ({ ...prev, currentArticle: 1, totalArticles: 1, currentAccountUuid: feedbackAccountUuid.trim() }));
-      let completedArticle: Partial<Article>;
-
-      if (feedbackContentType === 'gmb') {
-        setFeedbackStatusMsg('Generando post GMB con feedback aplicado...');
-        const completedGmb = await startWritingGmb(kws);
-        if (!completedGmb?.title) throw new Error('El post GMB no se generó correctamente');
-        completedArticle = completedGmb;
-      } else {
-        setFeedbackStatusMsg('Generando estructura del artículo con feedback aplicado...');
-        const outline = await proceedToOutlineCSV(kws);
-        setFeedbackStatusMsg('Redactando contenido...');
-        completedArticle = await startWriting(outline || undefined, detectedWebsite);
-        if (!completedArticle?.sections?.length) throw new Error('El artículo generado no tiene secciones');
-      }
-
-      // 6. Determinar credenciales WP a partir de la URL del post existente
+      // 1. Determinar credenciales WP desde la URL
       const parsedUrl = new URL(feedbackWpUrl.trim());
       const urlOrigin = parsedUrl.origin.replace(/\/$/, '');
       const domainMap = [
@@ -4017,49 +3944,74 @@ const App: React.FC = () => {
         { domain: wpDomainSite3.replace(/\/$/, ''), token: wpJwtTokenSite3, label: 'laprensa360.com' },
         { domain: wpDomainEnglish.replace(/\/$/, ''), token: wpJwtTokenEnglish, label: 'wall-trends.com' },
       ];
-      const creds = domainMap.find(d => urlOrigin === d.domain || urlOrigin.includes(d.domain.replace('https://', '').replace('http://', '')));
-      if (!creds) throw new Error(`No se encontraron credenciales para: ${urlOrigin}`);
-      addLog(`🎯 Dominio WP detectado: ${creds.label}`);
-
-      // 7. Obtener ID del post por slug
-      setFeedbackStatusMsg('Localizando post en WordPress...');
-      const pathParts = parsedUrl.pathname.replace(/\/$/, '').split('/').filter(Boolean);
-      const slug = pathParts[pathParts.length - 1];
+      const creds = domainMap.find(d =>
+        urlOrigin === d.domain ||
+        urlOrigin.includes(d.domain.replace('https://', '').replace('http://', ''))
+      );
+      if (!creds) throw new Error(`Sin credenciales para: ${urlOrigin}`);
       const rawToken = creds.token.trim();
       const WP_TOKEN_HDR = /^Bearer\s+/i.test(rawToken) ? rawToken : `Bearer ${rawToken}`;
+      addLog(`🎯 Dominio WP: ${creds.label}`);
 
+      // 2. Buscar post ID por slug
+      const pathParts = parsedUrl.pathname.replace(/\/$/, '').split('/').filter(Boolean);
+      const slug = pathParts[pathParts.length - 1];
       const slugRes = await fetch(
-        `${creds.domain}/wp-json/wp/v2/posts?slug=${encodeURIComponent(slug)}&_fields=id,link`,
+        `${creds.domain}/wp-json/wp/v2/posts?slug=${encodeURIComponent(slug)}&_fields=id,link&context=edit`,
         { headers: { 'Authorization': WP_TOKEN_HDR } }
       );
-      if (!slugRes.ok) throw new Error(`Error buscando post por slug (HTTP ${slugRes.status})`);
+      if (!slugRes.ok) throw new Error(`Error buscando post (HTTP ${slugRes.status})`);
       const slugData = await slugRes.json();
-      if (!slugData[0]?.id) throw new Error(`No se encontró post con slug "${slug}" en ${creds.domain}`);
+      if (!slugData[0]?.id) throw new Error(`No se encontró post con slug "${slug}"`);
       const postId = slugData[0].id as number;
-      addLog(`🔍 Post encontrado: ID ${postId}`);
+      addLog(`🔍 Post ID: ${postId}`);
 
-      // 8. Actualizar el post existente (PUT) usando la función publish con wpPostId
-      setFeedbackStatusMsg('Actualizando artículo en WordPress...');
-      const updateResult = await publish(completedArticle, { domain: creds.domain, token: creds.token, label: creds.label }, postId);
-      if (!updateResult?.success || !updateResult.url) throw new Error('Error actualizando el post en WordPress');
-      addLog(`✅ Artículo actualizado: ${updateResult.url}`);
+      // 3. Traer el contenido actual del post (context=edit devuelve HTML sin renderizar)
+      setFeedbackStatusMsg('Leyendo contenido actual del artículo...');
+      const postRes = await fetch(
+        `${creds.domain}/wp-json/wp/v2/posts/${postId}?context=edit&_fields=title,content`,
+        { headers: { 'Authorization': WP_TOKEN_HDR } }
+      );
+      if (!postRes.ok) throw new Error(`Error obteniendo post (HTTP ${postRes.status})`);
+      const postData = await postRes.json();
+      const existingTitle: string = postData.title?.raw || postData.title?.rendered || '';
+      const existingContent: string = postData.content?.raw || postData.content?.rendered || '';
+      if (!existingContent) throw new Error('El post existe pero no tiene contenido legible');
+      addLog(`📄 Artículo leído: "${existingTitle.slice(0, 60)}..." (${existingContent.length} chars)`);
 
-      // 9. Prodline sync (flujo normal)
+      // 4. Gemini aplica el feedback quirúrgicamente sobre el contenido existente
+      setFeedbackStatusMsg('Aplicando feedback con Gemini...');
+      const lang = communicationLanguageRef.current || communicationLanguage;
+      addLog(`📝 Feedback recibido: "${feedbackText.trim().slice(0, 100)}..."`);
+      const modified = await applyFeedbackToArticle(existingTitle, existingContent, feedbackText.trim(), lang);
+      addLog(`✅ Gemini aplicó los cambios (nuevo título: "${modified.title.slice(0, 60)}")`);
+
+      // 5. Actualizar el post en WP con PUT
+      setFeedbackStatusMsg('Guardando cambios en WordPress...');
+      const putRes = await fetch(`${creds.domain}/wp-json/wp/v2/posts/${postId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Authorization': WP_TOKEN_HDR },
+        body: JSON.stringify({ title: modified.title, content: modified.content, status: 'publish' }),
+      });
+      if (!putRes.ok) throw new Error(`Error actualizando post (HTTP ${putRes.status})`);
+      const putData = await putRes.json();
+      const updatedUrl: string = putData.link || feedbackWpUrl.trim();
+      addLog(`✅ Post actualizado: ${updatedUrl}`);
+
+      // 6. Prodline sync
       setFeedbackStatusMsg('Sincronizando con Prodline...');
       const ORBIDI_API_KEY = import.meta.env.VITE_ORBIDI_API_KEY;
-      const syncResult = await syncMarketingActionDirect(feedbackTaskUuid.trim(), updateResult.url, feedbackContentType, ORBIDI_API_KEY);
-      addLog(syncResult.success ? '✅ Prodline sincronizado correctamente' : `⚠️ Prodline: ${syncResult.error}`);
+      const syncResult = await syncMarketingActionDirect(feedbackTaskUuid.trim(), updatedUrl, feedbackContentType, ORBIDI_API_KEY);
+      addLog(syncResult.success ? '✅ Prodline OK' : `⚠️ Prodline: ${syncResult.error}`);
 
       setFeedbackStatus('success');
-      setFeedbackStatusMsg(updateResult.url);
+      setFeedbackStatusMsg(updatedUrl);
       addLog('\n✅ FEEDBACK COMPLETADO');
 
     } catch (e: any) {
-      addLog(`❌ Error en feedback: ${e.message}`);
+      addLog(`❌ Error: ${e.message}`);
       setFeedbackStatus('error');
       setFeedbackStatusMsg(e.message);
-    } finally {
-      feedbackInstructionsRef.current = '';
     }
   };
 
@@ -5132,20 +5084,6 @@ const App: React.FC = () => {
                       </div>
                     ) : (
                       <>
-                        {/* Account UUID */}
-                        <div>
-                          <label className="text-[10px] font-black uppercase text-[#A4D62C] mb-3 block tracking-widest">
-                            Account UUID del Cliente
-                          </label>
-                          <input
-                            type="text"
-                            className="w-full px-6 py-4 rounded-2xl bg-slate-50 border-2 border-transparent focus:border-[#A4D62C] outline-none font-mono text-sm"
-                            placeholder="34ad9915-6fdc-4aed-81a9..."
-                            value={feedbackAccountUuid}
-                            onChange={e => setFeedbackAccountUuid(e.target.value)}
-                          />
-                        </div>
-
                         {/* Tipo de artículo */}
                         <div>
                           <label className="text-[10px] font-black uppercase text-[#A4D62C] mb-3 block tracking-widest">

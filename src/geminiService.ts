@@ -1256,6 +1256,69 @@ Devuelve ÚNICAMENTE el siguiente JSON, sin texto adicional:
     }
     return parsed;
   }
+
+  /**
+   * Aplica el feedback del cliente sobre un artículo existente.
+   * Lee el HTML actual y el feedback, edita quirúrgicamente solo lo necesario
+   * y devuelve el artículo completo modificado.
+   */
+  async applyFeedbackToArticle(
+    existingTitle: string,
+    existingHtml: string,
+    feedback: string,
+    language?: string
+  ): Promise<{ title: string; content: string }> {
+    const langProfile = resolveLanguageProfile(language);
+
+    const prompt = `${langProfile.outputInstruction}
+
+Eres un editor de contenido experto. Tu trabajo es aplicar el feedback de un cliente sobre un artículo existente.
+
+REGLAS FUNDAMENTALES:
+1. Lee el feedback con atención y aplica ÚNICAMENTE los cambios que este pide.
+2. Si el feedback pide cambiar el tono → ajusta el tono pero mantén estructura y temas.
+3. Si el feedback pide hablar de un tema específico → reorienta el contenido hacia ese tema.
+4. Si el feedback pide agregar información → agrégala en la sección más apropiada.
+5. Si el feedback pide eliminar algo → elimínalo.
+6. Si el feedback pide cambiar el enfoque → cambia el enfoque pero conserva el formato HTML.
+7. Lo que el feedback NO menciona → déjalo exactamente igual.
+8. NUNCA regeneres el artículo completo desde cero si el feedback no lo pide.
+
+${langProfile.grammarRules}
+
+${langProfile.vocabularyPreferences}
+
+FORMATO HTML — OBLIGATORIO:
+- Solo estas etiquetas: <p>, <strong>, <ul>, <li>, <h2>, <a>
+- Sin markdown, sin **, sin #
+
+ARTÍCULO ACTUAL:
+Título: ${existingTitle}
+
+Contenido:
+${existingHtml}
+
+FEEDBACK DEL CLIENTE:
+${feedback}
+
+Devuelve ÚNICAMENTE este JSON (sin bloques de código, sin texto adicional):
+{
+  "title": "título del artículo (modificado solo si el feedback lo pide, si no, idéntico al original)",
+  "content": "HTML completo del artículo con los cambios aplicados"
+}`;
+
+    const text = await this.generateText({
+      model: MODELS.PRO,
+      prompt,
+      temperature: 0.4,
+    });
+
+    const parsed = this.extractJSON<{ title: string; content: string }>(text);
+    if (!parsed?.content) {
+      throw new Error('Gemini no pudo aplicar el feedback al artículo.');
+    }
+    return parsed;
+  }
 }
 
 /* ======================================================
@@ -1292,5 +1355,7 @@ export const generateImageRaw =
   geminiService.generateImageRaw.bind(geminiService);
 export const analyzeWebsite =
   geminiService.analyzeWebsite.bind(geminiService);
+export const applyFeedbackToArticle =
+  geminiService.applyFeedbackToArticle.bind(geminiService);
 
 export default geminiService;
