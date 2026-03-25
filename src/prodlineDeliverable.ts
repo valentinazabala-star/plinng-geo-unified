@@ -210,6 +210,35 @@ export interface MarketingActionSyncResult {
 }
 
 /**
+ * Cambia el estado de una tarea en Prodline a TASK_IN_PROGRESS.
+ * Se usa en el flujo de feedback antes de hacer el sync del deliverable.
+ *
+ * Endpoint: PATCH /task-management/tasks/{taskUuid}
+ */
+export async function setTaskInProgress(
+  taskUuid: string,
+  apiKey: string,
+): Promise<boolean> {
+  try {
+    const res = await fetch(
+      `${PRODLINE_BASE}/task-management/tasks/${taskUuid}`,
+      {
+        method: 'PATCH',
+        headers: {
+          'X-Api-Key': apiKey,
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({ status: 'TASK_IN_PROGRESS' }),
+      },
+    );
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Sincroniza el deliverable usando el nuevo endpoint directo.
  *
  * Endpoint: POST /webhook/marketing-actions

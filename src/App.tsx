@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { AppStep } from './types';
 import type { Article, Section, ContentType, ContentContext } from './types';
-import { createProdlineProposal, assignProdlineTask, syncMarketingActionDirect } from './prodlineDeliverable';
+import { createProdlineProposal, assignProdlineTask, syncMarketingActionDirect, setTaskInProgress } from './prodlineDeliverable';
 import {
   generateArticleOutline,
   generateSectionContent,
@@ -4000,9 +4000,14 @@ const App: React.FC = () => {
       const updatedUrl: string = putData.link || feedbackWpUrl.trim();
       addLog(`✅ Post actualizado: ${updatedUrl}`);
 
-      // 6. Prodline sync
-      setFeedbackStatusMsg('Sincronizando con Prodline...');
+      // 6. Cambiar status a TASK_IN_PROGRESS antes del sync
+      setFeedbackStatusMsg('Cambiando estado a TASK_IN_PROGRESS...');
       const ORBIDI_API_KEY = import.meta.env.VITE_ORBIDI_API_KEY;
+      const inProgressOk = await setTaskInProgress(feedbackTaskUuid.trim(), ORBIDI_API_KEY);
+      addLog(inProgressOk ? '✅ Estado → TASK_IN_PROGRESS' : '⚠️ No se pudo cambiar el estado (continuando...)');
+
+      // 7. Prodline sync normal
+      setFeedbackStatusMsg('Sincronizando con Prodline...');
       const syncResult = await syncMarketingActionDirect(feedbackTaskUuid.trim(), updatedUrl, feedbackContentType, ORBIDI_API_KEY);
       addLog(syncResult.success ? '✅ Prodline OK' : `⚠️ Prodline: ${syncResult.error}`);
 
