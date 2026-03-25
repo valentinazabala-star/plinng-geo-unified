@@ -287,11 +287,7 @@ export async function setTaskInProgress(
       { method: 'PATCH', headers, body },
     );
     if (res.ok) return { ok: true };
-    const txt = await res.text();
-    // Si es 404/405/422, caer en siguiente intento
-    if (res.status !== 404 && res.status !== 405 && res.status !== 422) {
-      return { ok: false, error: `PATCH ${res.status}: ${txt}` };
-    }
+    // Cualquier error de PATCH → caer en POST /properties
   } catch { /* red error, continuar */ }
 
   // Intento 2: POST /task/task-management/tasks/{uuid}/properties
