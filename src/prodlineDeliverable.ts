@@ -278,47 +278,26 @@ export async function updateProdlineDeliverable(
 
 /**
  * Cambia el estado de una tarea en Prodline a TASK_IN_PROGRESS.
- * Prueba varios endpoints en orden hasta encontrar uno que funcione.
- * Retorna { ok, error, log } para diagnóstico.
+ * Endpoint: PATCH /task/task-management/tasks/{task}?move_to=TASK_IN_PROGRESS
+ * El parámetro move_to va como query string, no en el body.
  */
 export async function setTaskInProgress(
   taskUuid: string,
   apiKey: string,
 ): Promise<{ ok: boolean; error?: string; log?: string }> {
-  const headers = {
-    'X-Api-Key': apiKey,
-    'Content-Type': 'application/json',
-    Accept: 'application/json',
-  };
-  const body = JSON.stringify({ status: 'TASK_IN_PROGRESS' });
-  const attempts: string[] = [];
-
-  const endpoints = [
-    // Variantes con /task/ prefix
-    { method: 'PATCH', url: `${PRODLINE_BASE}/task/task-management/tasks/${taskUuid}` },
-    { method: 'PUT',   url: `${PRODLINE_BASE}/task/task-management/tasks/${taskUuid}` },
-    { method: 'POST',  url: `${PRODLINE_BASE}/task/task-management/tasks/${taskUuid}/status` },
-    // Sin /task/ prefix
-    { method: 'PATCH', url: `${PRODLINE_BASE}/task-management/tasks/${taskUuid}` },
-    { method: 'POST',  url: `${PRODLINE_BASE}/task-management/tasks/${taskUuid}/status` },
-    // /properties (puede ignorar status pero lo intentamos al final)
-    { method: 'POST',  url: `${PRODLINE_BASE}/task/task-management/tasks/${taskUuid}/properties` },
-  ];
-
-  for (const ep of endpoints) {
-    try {
-      const res = await fetch(ep.url, { method: ep.method, headers, body });
-      const txt = await res.text();
-      attempts.push(`${ep.method} ${ep.url.replace(PRODLINE_BASE, '')} → ${res.status}`);
-      if (res.ok) {
-        return { ok: true, log: attempts.join(' | ') };
-      }
-    } catch (err) {
-      attempts.push(`${ep.method} ${ep.url.replace(PRODLINE_BASE, '')} → ERR`);
-    }
+  const url = `${PRODLINE_BASE}/task/task-management/tasks/${taskUuid}?move_to=TASK_IN_PROGRESS`;
+  try {
+    const res = await fetch(url, {
+      method: 'PATCH',
+      headers: { 'X-Api-Key': apiKey, Accept: 'application/json' },
+    });
+    const txt = await res.text();
+    if (res.ok) return { ok: true, log: `PATCH ?move_to=TASK_IN_PROGRESS → ${res.status}` };
+    return { ok: false, error: `PATCH ${res.status}: ${txt}`, log: `PATCH → ${res.status}` };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, error: msg, log: `PATCH → ERR` };
   }
-
-  return { ok: false, error: 'Ningún endpoint cambió el estado', log: attempts.join(' | ') };
 }
 
 /**
