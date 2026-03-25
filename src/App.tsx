@@ -3944,10 +3944,12 @@ const App: React.FC = () => {
         { domain: wpDomainSite3.replace(/\/$/, ''), token: wpJwtTokenSite3, label: 'laprensa360.com' },
         { domain: wpDomainEnglish.replace(/\/$/, ''), token: wpJwtTokenEnglish, label: 'wall-trends.com' },
       ];
-      const creds = domainMap.find(d =>
-        urlOrigin === d.domain ||
-        urlOrigin.includes(d.domain.replace('https://', '').replace('http://', ''))
-      );
+      const toHostname = (url: string) => {
+        try { return new URL(url.startsWith('http') ? url : `https://${url}`).hostname.replace(/^www\./, ''); }
+        catch { return url.replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0]; }
+      };
+      const urlHostname = toHostname(urlOrigin);
+      const creds = domainMap.find(d => toHostname(d.domain) === urlHostname);
       if (!creds) throw new Error(`Sin credenciales para: ${urlOrigin}`);
       const rawToken = creds.token.trim();
       const WP_TOKEN_HDR = /^Bearer\s+/i.test(rawToken) ? rawToken : `Bearer ${rawToken}`;
