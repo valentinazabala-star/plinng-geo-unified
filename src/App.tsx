@@ -3990,14 +3990,22 @@ const App: React.FC = () => {
       }
       addLog('🧠 Feedback inyectado como tema principal del artículo');
 
-      // 5. Generar outline + escribir artículo con el feedback como instrucción
-      setFeedbackStatusMsg('Generando estructura del artículo con feedback aplicado...');
+      // 5. Generar contenido según el tipo (GMB tiene flujo diferente a on_blog/off_page)
       setBatchProgress(prev => ({ ...prev, currentArticle: 1, totalArticles: 1, currentAccountUuid: feedbackAccountUuid.trim() }));
-      const outline = await proceedToOutlineCSV(kws);
+      let completedArticle: Partial<Article>;
 
-      setFeedbackStatusMsg('Redactando contenido...');
-      const completedArticle = await startWriting(outline || undefined, detectedWebsite);
-      if (!completedArticle?.sections?.length) throw new Error('El artículo generado no tiene secciones');
+      if (feedbackContentType === 'gmb') {
+        setFeedbackStatusMsg('Generando post GMB con feedback aplicado...');
+        const completedGmb = await startWritingGmb(kws);
+        if (!completedGmb?.title) throw new Error('El post GMB no se generó correctamente');
+        completedArticle = completedGmb;
+      } else {
+        setFeedbackStatusMsg('Generando estructura del artículo con feedback aplicado...');
+        const outline = await proceedToOutlineCSV(kws);
+        setFeedbackStatusMsg('Redactando contenido...');
+        completedArticle = await startWriting(outline || undefined, detectedWebsite);
+        if (!completedArticle?.sections?.length) throw new Error('El artículo generado no tiene secciones');
+      }
 
       // 6. Determinar credenciales WP a partir de la URL del post existente
       const parsedUrl = new URL(feedbackWpUrl.trim());
