@@ -266,42 +266,47 @@ export async function updateProdlineDeliverable(
 
 /**
  * Cambia el estado de una tarea en Prodline a TASK_IN_PROGRESS.
- * Intenta PATCH primero (transición de estado), luego POST /properties como fallback.
- * Retorna { ok, error } para poder loggear el fallo exacto.
+ * Prueba varios endpoints en orden hasta encontrar uno que funcione.
+ * Retorna { ok, error, log } para diagnóstico.
  */
 export async function setTaskInProgress(
   taskUuid: string,
   apiKey: string,
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<{ ok: boolean; error?: string; log?: string }> {
   const headers = {
     'X-Api-Key': apiKey,
     'Content-Type': 'application/json',
     Accept: 'application/json',
   };
   const body = JSON.stringify({ status: 'TASK_IN_PROGRESS' });
+  const attempts: string[] = [];
 
-  // Intento 1: PATCH /task/task-management/tasks/{uuid}
-  try {
-    const res = await fetch(
-      `${PRODLINE_BASE}/task/task-management/tasks/${taskUuid}`,
-      { method: 'PATCH', headers, body },
-    );
-    if (res.ok) return { ok: true };
-    // Cualquier error de PATCH → caer en POST /properties
-  } catch { /* red error, continuar */ }
+  const endpoints = [
+    // Variantes con /task/ prefix
+    { method: 'PATCH', url: `${PRODLINE_BASE}/task/task-management/tasks/${taskUuid}` },
+    { method: 'PUT',   url: `${PRODLINE_BASE}/task/task-management/tasks/${taskUuid}` },
+    { method: 'POST',  url: `${PRODLINE_BASE}/task/task-management/tasks/${taskUuid}/status` },
+    // Sin /task/ prefix
+    { method: 'PATCH', url: `${PRODLINE_BASE}/task-management/tasks/${taskUuid}` },
+    { method: 'POST',  url: `${PRODLINE_BASE}/task-management/tasks/${taskUuid}/status` },
+    // /properties (puede ignorar status pero lo intentamos al final)
+    { method: 'POST',  url: `${PRODLINE_BASE}/task/task-management/tasks/${taskUuid}/properties` },
+  ];
 
-  // Intento 2: POST /task/task-management/tasks/{uuid}/properties
-  try {
-    const res = await fetch(
-      `${PRODLINE_BASE}/task/task-management/tasks/${taskUuid}/properties`,
-      { method: 'POST', headers, body },
-    );
-    if (res.ok) return { ok: true };
-    const txt = await res.text();
-    return { ok: false, error: `POST-props ${res.status}: ${txt}` };
-  } catch (err: unknown) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  for (const ep of endpoints) {
+    try {
+      const res = await fetch(ep.url, { method: ep.method, headers, body });
+      const txt = await res.text();
+      attempts.push(`${ep.method} ${ep.url.replace(PRODLINE_BASE, '')} → ${res.status}`);
+      if (res.ok) {
+        return { ok: true, log: attempts.join(' | ') };
+      }
+    } catch (err) {
+      attempts.push(`${ep.method} ${ep.url.replace(PRODLINE_BASE, '')} → ERR`);
+    }
   }
+
+  return { ok: false, error: 'Ningún endpoint cambió el estado', log: attempts.join(' | ') };
 }
 
 /**

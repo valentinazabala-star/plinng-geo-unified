@@ -4004,6 +4004,7 @@ const App: React.FC = () => {
       setFeedbackStatusMsg('Cambiando estado a TASK_IN_PROGRESS...');
       const ORBIDI_API_KEY = import.meta.env.VITE_ORBIDI_API_KEY;
       const inProgressResult = await setTaskInProgress(feedbackTaskUuid.trim(), ORBIDI_API_KEY);
+      if (inProgressResult.log) addLog(`🔍 Status endpoints: ${inProgressResult.log}`);
       addLog(inProgressResult.ok
         ? '✅ Estado → TASK_IN_PROGRESS'
         : `⚠️ setTaskInProgress falló: ${inProgressResult.error ?? 'error desconocido'} (continuando...)`
