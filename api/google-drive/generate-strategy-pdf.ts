@@ -1,7 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
   cors,
-  driveRequest,
   slidesRequest,
   driveExportPdf,
   driveUploadMultipart,
@@ -19,14 +18,20 @@ interface StrategyAnalysis {
   technical_health_score?: string | number;
 }
 
-async function generatePdf(body: {
-  templateId?: string;
-  businessName?: string;
-  websiteUrl?: string;
-  analysis?: StrategyAnalysis;
-}): Promise<{ fileName: string; pdfBuffer: Buffer; copyId: string }> {
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  cors(res);
+  if (req.method === 'OPTIONS') { res.status(200).json({ ok: true }); return; }
+  if (req.method !== 'POST') { res.status(405).json({ error: 'Method not allowed' }); return; }
+
+  const body = req.body as {
+    templateId?: string;
+    businessName?: string;
+    websiteUrl?: string;
+    analysis?: StrategyAnalysis;
+  };
+
   const templateId = body.templateId || process.env.GOOGLE_STRATEGY_TEMPLATE_ID || '';
-  if (!templateId) throw new Error('templateId es requerido');
+  if (!templateId) { res.status(400).json({ error: 'templateId es requerido' }); return; }
 
   const businessName = normalizeValue(body.businessName);
   const websiteUrl = normalizeValue(body.websiteUrl);
@@ -35,21 +40,10 @@ async function generatePdf(body: {
   const documentDate = formatDocumentDate();
 
   if (topKeywords.length !== 5) {
-    throw new Error('Se requieren exactamente 5 keywords para generar la presentación');
+    res.status(400).json({ error: 'Se requieren exactamente 5 keywords para generar la presentación' });
+    return;
   }
 
-  // 1. Duplicate the template so we never modify the original
-  const copy = await driveRequest(
-    `/files/${encodeURIComponent(templateId)}/copy?fields=id`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: `_tmp_${Date.now()}` }),
-    },
-  ) as { id: string };
-  const copyId = copy.id;
-
-  // 2. Apply replacements on the copy
   const replacements = [
     { containsText: { text: '{{NOMBRE_COMERCIAL}}', matchCase: true }, replaceText: businessName },
     { containsText: { text: '{{URL_SITIO}}', matchCase: true }, replaceText: websiteUrl },
@@ -66,40 +60,51 @@ async function generatePdf(body: {
     );
   });
 
-  await slidesRequest(`/presentations/${encodeURIComponent(copyId)}:batchUpdate`, {
-    method: 'POST',
-    body: JSON.stringify({ requests: replacements.map((r) => ({ replaceAllText: r })) }),
+  const restoreRequests = [
+    { containsText: { text: businessName, matchCase: true }, replaceText: '{{NOMBRE_COMERCIAL}}' },
+    { containsText: { text: websiteUrl, matchCase: true }, replaceText: '{{URL_SITIO}}' },
+    { containsText: { text: documentDate, matchCase: true }, replaceText: '{{FECHA_DOCUMENTO}}' },
+    { containsText: { text: normalizeValue(analysis.monthly_visits, '0'), matchCase: true }, replaceText: '{{VISITAS_MES}}' },
+    { containsText: { text: normalizeValue(analysis.site_speed_score, '0'), matchCase: true }, replaceText: '{{VELOCIDAD_SCORE}}' },
+    { containsText: { text: normalizeValue(analysis.technical_health_score, '0'), matchCase: true }, replaceText: '{{SALUD_TECNICA}}' },
+  ];
+  topKeywords.forEach((item, i) => {
+    const idx = i + 1;
+    restoreRequests.push(
+      { containsText: { text: normalizeValue(item.keyword), matchCase: true }, replaceText: `{{KEYWORD_${idx}}}` },
+      { containsText: { text: positionLabel(item.position), matchCase: true }, replaceText: `{{KEYWORD_${idx}_POSICION}}` },
+    );
   });
 
-  // 3. Export PDF
-  const pdfBuffer = await driveExportPdf(copyId);
+  let pdfBuffer: Buffer;
+  try {
+    // 1. Apply replacements directly on the template
+    await slidesRequest(`/presentations/${encodeURIComponent(templateId)}:batchUpdate`, {
+      method: 'POST',
+      body: JSON.stringify({ requests: replacements.map((r) => ({ replaceAllText: r })) }),
+    });
+
+    // 2. Export PDF
+    pdfBuffer = await driveExportPdf(templateId);
+  } finally {
+    // 3. Always restore the template
+    await slidesRequest(`/presentations/${encodeURIComponent(templateId)}:batchUpdate`, {
+      method: 'POST',
+      body: JSON.stringify({ requests: restoreRequests.map((r) => ({ replaceAllText: r })) }),
+    }).catch(() => {});
+  }
+
   const timestamp = new Date().toISOString().slice(0, 10);
   const fileName = `${sanitizeFileName(`Estrategia SEO - ${businessName} - ${timestamp}`)}.pdf`;
 
-  return { fileName, pdfBuffer, copyId };
-}
-
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  cors(res);
-  if (req.method === 'OPTIONS') { res.status(200).json({ ok: true }); return; }
-  if (req.method !== 'POST') { res.status(405).json({ error: 'Method not allowed' }); return; }
-
-  let copyId: string | undefined;
   try {
-    const { fileName, pdfBuffer, copyId: cid } = await generatePdf(req.body as Parameters<typeof generatePdf>[0]);
-    copyId = cid;
-
     const outputFolderId = process.env.GOOGLE_STRATEGY_OUTPUT_FOLDER_ID;
-
     if (outputFolderId) {
-      // Upload PDF to Drive and return the Drive link
       const uploaded = await driveUploadMultipart(
         { name: fileName, parents: [outputFolderId] },
         pdfBuffer,
         'application/pdf',
       );
-      // Delete the temp copy
-      await driveRequest(`/files/${encodeURIComponent(copyId)}`, { method: 'DELETE' }).catch(() => {});
       res.status(200).json({
         success: true,
         fileName,
@@ -108,18 +113,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         driveFileId: uploaded.id,
       });
     } else {
-      // Return PDF as binary download
-      await driveRequest(`/files/${encodeURIComponent(copyId)}`, { method: 'DELETE' }).catch(() => {});
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
       res.setHeader('X-File-Name', fileName);
       res.status(200).send(pdfBuffer);
     }
   } catch (err: unknown) {
-    // Clean up temp copy if it was created
-    if (copyId) {
-      await driveRequest(`/files/${encodeURIComponent(copyId)}`, { method: 'DELETE' }).catch(() => {});
-    }
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
 }
