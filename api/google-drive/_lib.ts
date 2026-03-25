@@ -125,7 +125,7 @@ export async function driveUploadMultipart(
   ]);
 
   const res = await fetch(
-    `${GOOGLE_DRIVE_UPLOAD_BASE}/files?uploadType=multipart&fields=id,name,webViewLink,parents,mimeType`,
+    `${GOOGLE_DRIVE_UPLOAD_BASE}/files?uploadType=multipart&supportsAllDrives=true&fields=id,name,webViewLink,parents,mimeType`,
     {
       method: 'POST',
       headers: {
