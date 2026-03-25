@@ -316,15 +316,26 @@ export async function setTaskInProgress(
  * El backend descarga la imagen de portada desde Google Drive,
  * crea la propuesta y cambia el estado de la tarea a PENDING_TO_REVIEW.
  */
+// Title keywords for deliverable types not covered by ContentType
+const DELIVERABLE_TITLE_OVERRIDES: Record<string, string> = {
+  strategy_seo:     'Estrategia SEO',
+  gmb_setup:        'Configuración GMB',
+  gmb_optimization: 'Optimización GMB',
+};
+
 export async function syncMarketingActionDirect(
   taskUuid: string,
   articleUrl: string,
   contentType: ContentType,
   _apiKey: string,
+  deliverableTypeOverride?: string,
 ): Promise<MarketingActionSyncResult> {
   const apiKey = _apiKey;
-  const productType = CONTENT_TYPE_TO_PRODUCT[contentType];
-  const titleKeyword = CONTENT_TYPE_TO_TITLE_KEYWORD[contentType];
+  const productType = deliverableTypeOverride === 'gmb_setup' || deliverableTypeOverride === 'gmb_optimization'
+    ? 'GMB'
+    : CONTENT_TYPE_TO_PRODUCT[contentType];
+  const titleKeyword = (deliverableTypeOverride && DELIVERABLE_TITLE_OVERRIDES[deliverableTypeOverride])
+    ?? CONTENT_TYPE_TO_TITLE_KEYWORD[contentType];
 
   try {
     const res = await fetch(`${PRODLINE_BASE}/webhook/marketing-actions`, {

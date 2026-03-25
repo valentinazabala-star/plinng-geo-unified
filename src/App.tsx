@@ -4398,10 +4398,10 @@ const App: React.FC = () => {
     }
 
     setStrategyStatus('loading');
-    setStrategyStatusMsg('Cargando entregable de estrategia en Prodline...');
+    setStrategyStatusMsg('Sincronizando estrategia en Prodline...');
 
     try {
-      const proposalResult = await createProdlineProposal(
+      const syncResult = await syncMarketingActionDirect(
         strategyTaskUuid.trim(),
         strategyPdfUrl,
         'on_blog',
@@ -4409,15 +4409,11 @@ const App: React.FC = () => {
         'strategy_seo',
       );
 
-      if (!proposalResult.success) {
-        throw new Error(proposalResult.error || 'No se pudo crear la propuesta en Prodline');
+      if (!syncResult.success) {
+        throw new Error(syncResult.error || 'No se pudo sincronizar en Prodline');
       }
 
-      const assigned = await assignProdlineTask(strategyTaskUuid.trim(), ORBIDI_API_KEY);
-      addLog(assigned
-        ? '✅ Estrategia cargada en Prodline y asignada a content_factory'
-        : '⚠️ Estrategia cargada en Prodline, pero no se pudo asignar content_factory');
-
+      addLog('✅ Estrategia SEO cargada en Prodline (estado, imagen, fechas y revisión actualizados)');
       setStrategyStep('success');
       setStrategyStatus('success');
       setStrategyStatusMsg(strategyPdfUrl);
