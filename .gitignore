@@ -25,5 +25,10 @@ dist-ssr
 
 .env
 .env.*
+.vercel
+
+# Google service account credentials — NEVER commit these
 service-account*.json
 google-service-account*.json
+*-service-account*.json
+orbidi-*.json
