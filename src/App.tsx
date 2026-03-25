@@ -1264,6 +1264,21 @@ const App: React.FC = () => {
   // Para el botón de reintento de Prodline
   const [feedbackProdlineRetry, setFeedbackProdlineRetry] = useState<{ taskUuid: string; url: string; contentType: ContentType } | null>(null);
 
+  // Vista previa antes de publicar en WP
+  const [feedbackStep, setFeedbackStep] = useState<'form' | 'preview'>('form');
+  const [feedbackPreview, setFeedbackPreview] = useState<{
+    title: string; content: string;
+    originalTitle: string; originalContent: string;
+  } | null>(null);
+  const [feedbackPreviewUrl, setFeedbackPreviewUrl] = useState('');
+  const [feedbackExtraInstructions, setFeedbackExtraInstructions] = useState('');
+  const feedbackPendingPublishRef = React.useRef<{
+    postId: number;
+    domain: string;
+    tokenHeader: string;
+    lang: string;
+  } | null>(null);
+
   // 🧠 Memoria de títulos generados por cuenta (persiste en localStorage entre sesiones)
   const [accountMemory, setAccountMemory] = useState<Record<string, string[]>>(() => {
     try {
@@ -3922,8 +3937,20 @@ const App: React.FC = () => {
     return result?.success ? { success: true, url: result.url } : { success: false };
   };
 
-  // 📝 Flujo de Feedback: lee el artículo existente en WP, aplica el feedback con Gemini
-  // de forma quirúrgica (solo cambia lo necesario) y actualiza el post.
+  // Helpers compartidos entre funciones de feedback
+  const buildFeedbackDomainMap = () => [
+    { domain: wpDomainSite5.replace(/\/$/, ''), token: wpJwtTokenSite5, label: 'masproposals.com' },
+    { domain: wpDomain.replace(/\/$/, ''), token: wpJwtToken, label: 'cienciacronica.com' },
+    { domain: wpDomainSite2.replace(/\/$/, ''), token: wpJwtTokenSite2, label: 'elinformedigital.com' },
+    { domain: wpDomainSite3.replace(/\/$/, ''), token: wpJwtTokenSite3, label: 'laprensa360.com' },
+    { domain: wpDomainEnglish.replace(/\/$/, ''), token: wpJwtTokenEnglish, label: 'wall-trends.com' },
+  ];
+  const toHostname = (url: string) => {
+    try { return new URL(url.startsWith('http') ? url : `https://${url}`).hostname.replace(/^www\./, ''); }
+    catch { return url.replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0]; }
+  };
+
+  // 📝 Paso 1: Lee el artículo de WP y aplica el feedback con Gemini → muestra preview
   const handleFeedbackFlow = async () => {
     if (!feedbackWpUrl.trim()) { alert('Ingresa la URL del artículo en WordPress'); return; }
     if (!feedbackText.trim()) { alert('Ingresa el feedback del cliente'); return; }
@@ -3936,30 +3963,17 @@ const App: React.FC = () => {
     addLog('========================================');
 
     try {
-      // 1. Determinar credenciales WP desde la URL
+      // 1. Credenciales WP
       const parsedUrl = new URL(feedbackWpUrl.trim());
       const urlOrigin = parsedUrl.origin.replace(/\/$/, '');
-      const domainMap = [
-        { domain: wpDomainSite5.replace(/\/$/, ''), token: wpJwtTokenSite5, label: 'masproposals.com' },
-        { domain: wpDomain.replace(/\/$/, ''), token: wpJwtToken, label: 'cienciacronica.com' },
-        { domain: wpDomainSite2.replace(/\/$/, ''), token: wpJwtTokenSite2, label: 'elinformedigital.com' },
-        { domain: wpDomainSite3.replace(/\/$/, ''), token: wpJwtTokenSite3, label: 'laprensa360.com' },
-        { domain: wpDomainEnglish.replace(/\/$/, ''), token: wpJwtTokenEnglish, label: 'wall-trends.com' },
-      ];
-      const toHostname = (url: string) => {
-        try { return new URL(url.startsWith('http') ? url : `https://${url}`).hostname.replace(/^www\./, ''); }
-        catch { return url.replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0]; }
-      };
-      const urlHostname = toHostname(urlOrigin);
-      const creds = domainMap.find(d => toHostname(d.domain) === urlHostname);
+      const creds = buildFeedbackDomainMap().find(d => toHostname(d.domain) === toHostname(urlOrigin));
       if (!creds) throw new Error(`Sin credenciales para: ${urlOrigin}`);
       const rawToken = creds.token.trim();
       const WP_TOKEN_HDR = /^Bearer\s+/i.test(rawToken) ? rawToken : `Bearer ${rawToken}`;
       addLog(`🎯 Dominio WP: ${creds.label}`);
 
-      // 2. Buscar post ID por slug
-      const pathParts = parsedUrl.pathname.replace(/\/$/, '').split('/').filter(Boolean);
-      const slug = pathParts[pathParts.length - 1];
+      // 2. Post ID por slug
+      const slug = parsedUrl.pathname.replace(/\/$/, '').split('/').filter(Boolean).pop() ?? '';
       const slugRes = await fetch(
         `${creds.domain}/wp-json/wp/v2/posts?slug=${encodeURIComponent(slug)}&_fields=id,link&context=edit`,
         { headers: { 'Authorization': WP_TOKEN_HDR } }
@@ -3970,10 +3984,10 @@ const App: React.FC = () => {
       const postId = slugData[0].id as number;
       addLog(`🔍 Post ID: ${postId}`);
 
-      // 3. Traer el contenido actual del post (context=edit devuelve HTML sin renderizar)
+      // 3. Contenido actual
       setFeedbackStatusMsg('Leyendo contenido actual del artículo...');
       const postRes = await fetch(
-        `${creds.domain}/wp-json/wp/v2/posts/${postId}?context=edit&_fields=title,content`,
+        `${creds.domain}/wp-json/wp/v2/posts/${postId}?context=edit&_fields=title,content,language`,
         { headers: { 'Authorization': WP_TOKEN_HDR } }
       );
       if (!postRes.ok) throw new Error(`Error obteniendo post (HTTP ${postRes.status})`);
@@ -3983,56 +3997,106 @@ const App: React.FC = () => {
       if (!existingContent) throw new Error('El post existe pero no tiene contenido legible');
       addLog(`📄 Artículo leído: "${existingTitle.slice(0, 60)}..." (${existingContent.length} chars)`);
 
-      // 4. Gemini aplica el feedback quirúrgicamente sobre el contenido existente
+      // 4. Gemini aplica el feedback respetando el idioma del artículo existente
       setFeedbackStatusMsg('Aplicando feedback con Gemini...');
-      const lang = communicationLanguageRef.current || communicationLanguage;
-      addLog(`📝 Feedback recibido: "${feedbackText.trim().slice(0, 100)}..."`);
+      // Detectar idioma por dominio: wall-trends es inglés, resto según config
+      const isEnglishDomain = toHostname(creds.domain).includes('wall-trends');
+      const lang = isEnglishDomain ? 'en' : (communicationLanguageRef.current || communicationLanguage || 'es');
+      addLog(`📝 Feedback: "${feedbackText.trim().slice(0, 100)}..." (idioma: ${lang})`);
       const modified = await applyFeedbackToArticle(existingTitle, existingContent, feedbackText.trim(), lang);
-      addLog(`✅ Gemini aplicó los cambios (nuevo título: "${modified.title.slice(0, 60)}")`);
+      addLog(`✅ Gemini aplicó los cambios (título: "${modified.title.slice(0, 60)}")`);
 
-      // 5. Actualizar el post en WP con PUT
-      setFeedbackStatusMsg('Guardando cambios en WordPress...');
-      const putRes = await fetch(`${creds.domain}/wp-json/wp/v2/posts/${postId}`, {
+      // Guardar datos para el paso de publicación
+      feedbackPendingPublishRef.current = { postId, domain: creds.domain, tokenHeader: WP_TOKEN_HDR, lang };
+      setFeedbackPreview({ title: modified.title, content: modified.content, originalTitle: existingTitle, originalContent: existingContent });
+      setFeedbackPreviewUrl(feedbackWpUrl.trim());
+      setFeedbackExtraInstructions('');
+      setFeedbackStatus('idle');
+      setFeedbackStep('preview');
+
+    } catch (e: any) {
+      addLog(`❌ Error: ${e.message}`);
+      setFeedbackStatus('error');
+      setFeedbackStatusMsg(e.message);
+    }
+  };
+
+  // Aplicar instrucciones adicionales sobre el preview actual
+  const handleApplyExtraInstructions = async () => {
+    if (!feedbackExtraInstructions.trim() || !feedbackPreview || !feedbackPendingPublishRef.current) return;
+    setFeedbackStatus('loading');
+    setFeedbackStatusMsg('Aplicando cambios adicionales con Gemini...');
+    try {
+      const { lang } = feedbackPendingPublishRef.current;
+      const updated = await applyFeedbackToArticle(feedbackPreview.title, feedbackPreview.content, feedbackExtraInstructions.trim(), lang);
+      setFeedbackPreview(prev => prev ? { ...prev, title: updated.title, content: updated.content } : prev);
+      setFeedbackExtraInstructions('');
+      addLog(`✅ Cambios adicionales aplicados (título: "${updated.title.slice(0, 60)}")`);
+    } catch (e: any) {
+      addLog(`❌ Error en cambios adicionales: ${e.message}`);
+    }
+    setFeedbackStatus('idle');
+    setFeedbackStatusMsg('');
+  };
+
+  // Deshacer cambios — restaurar contenido original
+  const handleUndoFeedback = () => {
+    if (!feedbackPreview) return;
+    setFeedbackPreview(prev => prev
+      ? { ...prev, title: prev.originalTitle, content: prev.originalContent }
+      : prev
+    );
+    addLog('↩️ Cambios revertidos al original');
+  };
+
+  // 📤 Paso 2: Publicar el preview en WordPress y sincronizar Prodline
+  const handlePublishFeedback = async () => {
+    if (!feedbackPreview || !feedbackPendingPublishRef.current) return;
+    const { postId, domain, tokenHeader } = feedbackPendingPublishRef.current;
+
+    setFeedbackStatus('loading');
+    setFeedbackStatusMsg('Guardando cambios en WordPress...');
+
+    try {
+      const putRes = await fetch(`${domain}/wp-json/wp/v2/posts/${postId}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json', 'Authorization': WP_TOKEN_HDR },
-        body: JSON.stringify({ title: modified.title, content: modified.content, status: 'publish' }),
+        headers: { 'Content-Type': 'application/json', 'Authorization': tokenHeader },
+        body: JSON.stringify({ title: feedbackPreview.title, content: feedbackPreview.content, status: 'publish' }),
       });
       if (!putRes.ok) throw new Error(`Error actualizando post (HTTP ${putRes.status})`);
       const putData = await putRes.json();
-      const updatedUrl: string = putData.link || feedbackWpUrl.trim();
+      const updatedUrl: string = putData.link || feedbackPreviewUrl;
       addLog(`✅ Post actualizado: ${updatedUrl}`);
 
-      // 6. Cambiar status a TASK_IN_PROGRESS antes del sync
+      // Cambiar estado en Prodline
       setFeedbackStatusMsg('Cambiando estado a TASK_IN_PROGRESS...');
       const ORBIDI_API_KEY = import.meta.env.VITE_ORBIDI_API_KEY;
       const inProgressResult = await setTaskInProgress(feedbackTaskUuid.trim(), ORBIDI_API_KEY);
-      if (inProgressResult.log) addLog(`🔍 Status endpoints: ${inProgressResult.log}`);
-      addLog(inProgressResult.ok
-        ? '✅ Estado → TASK_IN_PROGRESS'
-        : `⚠️ setTaskInProgress falló: ${inProgressResult.error ?? 'error desconocido'} (continuando...)`
-      );
+      if (inProgressResult.log) addLog(`🔍 Status: ${inProgressResult.log}`);
+      addLog(inProgressResult.ok ? '✅ Estado → TASK_IN_PROGRESS' : `⚠️ ${inProgressResult.error} (continuando...)`);
 
-      // 7. Prodline sync — actualizar deliverable existente
+      // Sync Prodline — usar URL editable por el usuario
       setFeedbackStatusMsg('Sincronizando con Prodline...');
-      const proposalResult = await updateProdlineDeliverable(feedbackTaskUuid.trim(), updatedUrl, feedbackContentType, ORBIDI_API_KEY);
+      const deliverableUrl = feedbackPreviewUrl.trim() || updatedUrl;
+      const proposalResult = await updateProdlineDeliverable(feedbackTaskUuid.trim(), deliverableUrl, feedbackContentType, ORBIDI_API_KEY);
       addLog(proposalResult.success
-        ? `✅ Deliverable Prodline actualizado (imagen ${proposalResult.imageUploaded ? 'subida' : 'como link'})`
+        ? `✅ Deliverable Prodline actualizado`
         : `⚠️ Prodline deliverable: ${proposalResult.error}`
       );
 
       if (!proposalResult.success) {
-        // Guardar datos para botón de reintento manual
-        setFeedbackProdlineRetry({ taskUuid: feedbackTaskUuid.trim(), url: updatedUrl, contentType: feedbackContentType });
-        addLog('ℹ️ Puedes reintentar el sync de Prodline con el botón "Reintentar Prodline" después de cambiar el estado manualmente en la plataforma.');
+        setFeedbackProdlineRetry({ taskUuid: feedbackTaskUuid.trim(), url: deliverableUrl, contentType: feedbackContentType });
+        addLog('ℹ️ Usa "Reintentar Prodline" después de cambiar el estado manualmente.');
       } else {
         setFeedbackProdlineRetry(null);
         const assigned = await assignProdlineTask(feedbackTaskUuid.trim(), ORBIDI_API_KEY);
         addLog(assigned ? '✅ assigned_team: content_factory' : '⚠️ No se pudo asignar equipo');
       }
 
+      setFeedbackStep('form');
       setFeedbackStatus('success');
       setFeedbackStatusMsg(updatedUrl);
-      addLog('\n✅ FEEDBACK COMPLETADO (WP actualizado)');
+      addLog('\n✅ FEEDBACK COMPLETADO');
 
     } catch (e: any) {
       addLog(`❌ Error: ${e.message}`);
@@ -5105,37 +5169,121 @@ const App: React.FC = () => {
                 {/* MODO 3: FEEDBACK */}
                 {isFeedbackMode ? (
                   <div className="space-y-6">
+
+                    {/* ── VISTA: ÉXITO ── */}
                     {feedbackStatus === 'success' ? (
-                      <div className="text-center space-y-6">
+                      <div className="text-center space-y-4">
                         <div className="inline-block p-6 bg-green-100 rounded-full">
                           <i className="fas fa-check-circle text-5xl text-green-600"></i>
                         </div>
                         <h3 className="text-2xl font-black text-green-900">¡Artículo actualizado!</h3>
-                        <a
-                          href={feedbackStatusMsg}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="block text-[#A4D62C] hover:underline font-semibold break-all text-sm"
-                        >
+                        <a href={feedbackStatusMsg} target="_blank" rel="noopener noreferrer"
+                          className="block text-[#A4D62C] hover:underline font-semibold break-all text-sm">
                           {feedbackStatusMsg}
                         </a>
-                        {/* Botón de reintento Prodline — visible en success si el sync falló */}
                         {feedbackProdlineRetry && (
-                          <button
-                            onClick={handleProdlineRetry}
-                            className="w-full font-black py-4 rounded-2xl shadow transition-all flex items-center justify-center gap-3 bg-orange-500 text-white hover:bg-orange-600"
-                          >
+                          <button onClick={handleProdlineRetry}
+                            className="w-full font-black py-4 rounded-2xl flex items-center justify-center gap-3 bg-orange-500 text-white hover:bg-orange-600">
                             <i className="fas fa-redo"></i> Reintentar sync Prodline
                           </button>
                         )}
                         <button
-                          onClick={() => { setFeedbackStatus('idle'); setFeedbackStatusMsg(''); setFeedbackAccountUuid(''); setFeedbackWpUrl(''); setFeedbackText(''); setFeedbackTaskUuid(''); setFeedbackContentType('on_blog'); setFeedbackProdlineRetry(null); }}
-                          className="w-full bg-slate-900 text-white font-black py-4 rounded-2xl hover:bg-black transition-all"
-                        >
+                          onClick={() => { setFeedbackStatus('idle'); setFeedbackStatusMsg(''); setFeedbackWpUrl(''); setFeedbackText(''); setFeedbackTaskUuid(''); setFeedbackContentType('on_blog'); setFeedbackProdlineRetry(null); setFeedbackStep('form'); setFeedbackPreview(null); }}
+                          className="w-full bg-slate-900 text-white font-black py-4 rounded-2xl hover:bg-black transition-all">
                           Nuevo Feedback
                         </button>
                       </div>
+
+                    ) : feedbackStep === 'preview' && feedbackPreview ? (
+                      /* ── VISTA: PREVIEW ── */
+                      <div className="space-y-5">
+                        <div className="flex items-center justify-between">
+                          <h3 className="font-black text-slate-800 text-base">Vista previa del borrador</h3>
+                          <button onClick={() => { setFeedbackStep('form'); setFeedbackStatus('idle'); }}
+                            className="text-xs text-slate-400 hover:text-slate-600 flex items-center gap-1">
+                            <i className="fas fa-arrow-left"></i> Volver
+                          </button>
+                        </div>
+
+                        {/* Título editable */}
+                        <div>
+                          <label className="text-[10px] font-black uppercase text-[#A4D62C] mb-2 block tracking-widest">Título</label>
+                          <input
+                            type="text"
+                            className="w-full px-4 py-3 rounded-xl bg-slate-50 border-2 border-transparent focus:border-[#A4D62C] outline-none font-semibold text-sm"
+                            value={feedbackPreview.title}
+                            onChange={e => setFeedbackPreview(prev => prev ? { ...prev, title: e.target.value } : prev)}
+                          />
+                        </div>
+
+                        {/* URL del entregable editable */}
+                        <div>
+                          <label className="text-[10px] font-black uppercase text-[#A4D62C] mb-2 block tracking-widest">URL del entregable (Prodline)</label>
+                          <input
+                            type="url"
+                            className="w-full px-4 py-3 rounded-xl bg-slate-50 border-2 border-transparent focus:border-[#A4D62C] outline-none font-mono text-xs"
+                            value={feedbackPreviewUrl}
+                            onChange={e => setFeedbackPreviewUrl(e.target.value)}
+                          />
+                        </div>
+
+                        {/* Contenido renderizado */}
+                        <div>
+                          <label className="text-[10px] font-black uppercase text-[#A4D62C] mb-2 block tracking-widest">Contenido</label>
+                          <div
+                            className="w-full max-h-72 overflow-y-auto p-4 rounded-xl bg-slate-50 border-2 border-slate-100 text-sm text-slate-700 prose prose-sm max-w-none"
+                            dangerouslySetInnerHTML={{ __html: feedbackPreview.content }}
+                          />
+                        </div>
+
+                        {/* Instrucciones adicionales */}
+                        <div>
+                          <label className="text-[10px] font-black uppercase text-[#A4D62C] mb-2 block tracking-widest">Solicitar cambios adicionales</label>
+                          <div className="flex gap-2">
+                            <textarea
+                              rows={3}
+                              className="flex-1 px-4 py-3 rounded-xl bg-slate-50 border-2 border-transparent focus:border-[#A4D62C] outline-none text-sm resize-none"
+                              placeholder="Ej: Acorta la introducción, cambia el tono a más formal..."
+                              value={feedbackExtraInstructions}
+                              onChange={e => setFeedbackExtraInstructions(e.target.value)}
+                            />
+                            <button
+                              onClick={handleApplyExtraInstructions}
+                              disabled={feedbackStatus === 'loading' || !feedbackExtraInstructions.trim()}
+                              className="px-4 py-3 rounded-xl bg-slate-800 text-white font-black text-xs self-stretch flex items-center justify-center disabled:opacity-40 hover:bg-black transition-all"
+                            >
+                              {feedbackStatus === 'loading' ? <i className="fas fa-spinner fa-spin"></i> : <><i className="fas fa-magic mr-1"></i>Aplicar</>}
+                            </button>
+                          </div>
+                        </div>
+
+                        {feedbackStatus === 'loading' && (
+                          <div className="flex items-center gap-3 p-3 bg-[#A4D62C]/10 border-2 border-[#A4D62C]/30 rounded-xl text-[#7A9E1F] text-sm font-semibold">
+                            <i className="fas fa-spinner fa-spin flex-shrink-0"></i>
+                            <span>{feedbackStatusMsg || 'Procesando...'}</span>
+                          </div>
+                        )}
+
+                        {/* Acciones */}
+                        <div className="flex gap-3">
+                          <button
+                            onClick={handleUndoFeedback}
+                            className="flex-1 py-4 rounded-2xl border-2 border-slate-200 text-slate-600 font-black text-sm hover:border-slate-400 transition-all flex items-center justify-center gap-2"
+                          >
+                            <i className="fas fa-undo"></i> Deshacer cambios
+                          </button>
+                          <button
+                            onClick={handlePublishFeedback}
+                            disabled={feedbackStatus === 'loading'}
+                            className="flex-1 py-4 rounded-2xl bg-[#A4D62C] text-white font-black text-sm hover:bg-[#8DB525] transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                          >
+                            <i className="fas fa-upload"></i> Actualizar WordPress
+                          </button>
+                        </div>
+                      </div>
+
                     ) : (
+                      /* ── VISTA: FORMULARIO ── */
                       <>
                         {/* Tipo de artículo */}
                         <div>
@@ -5205,7 +5353,7 @@ const App: React.FC = () => {
                           </div>
                         )}
 
-                        {/* Loading status */}
+                        {/* Loading */}
                         {feedbackStatus === 'loading' && (
                           <div className="flex items-center gap-3 p-4 bg-[#A4D62C]/10 border-2 border-[#A4D62C]/30 rounded-2xl text-[#7A9E1F] text-sm font-semibold">
                             <i className="fas fa-spinner fa-spin flex-shrink-0"></i>
@@ -5218,26 +5366,14 @@ const App: React.FC = () => {
                           onClick={handleFeedbackFlow}
                           disabled={feedbackStatus === 'loading'}
                           className={`w-full font-black py-6 rounded-3xl shadow-xl transition-all text-lg flex items-center justify-center gap-4 ${
-                            feedbackStatus === 'loading'
-                              ? 'bg-slate-200 text-slate-400 cursor-not-allowed'
-                              : 'bg-[#A4D62C] text-white hover:bg-[#8DB525]'
+                            feedbackStatus === 'loading' ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-[#A4D62C] text-white hover:bg-[#8DB525]'
                           }`}
                         >
                           {feedbackStatus === 'loading'
-                            ? <><i className="fas fa-spinner fa-spin"></i> Procesando...</>
-                            : <><i className="fas fa-sync-alt"></i> Aplicar Feedback y Actualizar</>
+                            ? <><i className="fas fa-spinner fa-spin"></i> Analizando y aplicando feedback...</>
+                            : <><i className="fas fa-eye"></i> Ver borrador con cambios</>
                           }
                         </button>
-
-                        {/* Botón de reintento Prodline */}
-                        {feedbackProdlineRetry && (
-                          <button
-                            onClick={handleProdlineRetry}
-                            className="w-full font-black py-4 rounded-3xl shadow-xl transition-all text-base flex items-center justify-center gap-3 bg-orange-500 text-white hover:bg-orange-600"
-                          >
-                            <i className="fas fa-redo"></i> Reintentar Prodline
-                          </button>
-                        )}
                       </>
                     )}
                   </div>
