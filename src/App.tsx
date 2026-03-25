@@ -4246,9 +4246,15 @@ const App: React.FC = () => {
 
     try {
       const rawText = await fetchBriefByUuid(strategyAccountUuid.trim());
-      const briefData = rawText.toLowerCase().includes('<!doctype html') || rawText.includes('<html')
-        ? rawText
-        : JSON.parse(rawText);
+      let briefData: any;
+      if (rawText.toLowerCase().includes('<!doctype html') || rawText.includes('<html')) {
+        briefData = rawText;
+      } else {
+        try { briefData = JSON.parse(rawText); } catch { briefData = rawText; }
+      }
+      if (typeof briefData === 'string' && !briefData.includes('<') && briefData.length < 200) {
+        throw new Error(`Brief no disponible: ${briefData}`);
+      }
 
       const detectedBusinessName = extractStrategyBusinessName(briefData) || '';
       const detectedWebsite = extractStrategyWebsite(briefData);
@@ -4433,9 +4439,12 @@ const App: React.FC = () => {
       try {
         addLog(`📥 Obteniendo brief...`);
         const rawText = await fetchBriefByUuid(row.account_uuid);
-        const briefData = rawText.toLowerCase().includes('<!doctype html') || rawText.includes('<html')
-          ? rawText
-          : JSON.parse(rawText);
+        let briefData: any;
+        if (rawText.toLowerCase().includes('<!doctype html') || rawText.includes('<html')) {
+          briefData = rawText;
+        } else {
+          try { briefData = JSON.parse(rawText); } catch { briefData = rawText; }
+        }
 
         detectedWebsite = await handleDataAcquisition(briefData, true);
         if (detectedWebsite) {
