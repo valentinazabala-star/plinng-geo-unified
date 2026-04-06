@@ -1350,6 +1350,7 @@ const App: React.FC = () => {
   } | null>(null);
   const [feedbackPreviewUrl, setFeedbackPreviewUrl] = useState('');
   const [feedbackExtraInstructions, setFeedbackExtraInstructions] = useState('');
+  const [feedbackTone, setFeedbackTone] = useState('');
   const feedbackPendingPublishRef = React.useRef<{
     postId: number;
     domain: string;
@@ -1370,6 +1371,10 @@ const App: React.FC = () => {
   const [strategyPdfStatus, setStrategyPdfStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [strategyPdfUrl, setStrategyPdfUrl] = useState('');
   const [strategyPdfMsg, setStrategyPdfMsg] = useState('');
+  const [strategyDeliverableUrl, setStrategyDeliverableUrl] = useState('');
+  const [strategyChartLabels, setStrategyChartLabels] = useState<string[]>([]);
+  const [strategyChartData, setStrategyChartData] = useState<number[]>([]);
+  const [strategyTotalKeywords, setStrategyTotalKeywords] = useState(0);
 
   // ── Estrategia Masiva ──────────────────────────────────────────────────────
   const [isBatchStrategyMode, setIsBatchStrategyMode] = useState(false);
@@ -1378,7 +1383,7 @@ const App: React.FC = () => {
     account_uuid: string; task_uuid: string;
     status: 'pending' | 'running' | 'done' | 'error';
     businessName: string; website: string; hasWebsite: boolean;
-    driveUrl: string; error: string;
+    driveUrl: string; prodlineOk: boolean; error: string;
   }>>([]);
   const [batchStrategyRunning, setBatchStrategyRunning] = useState(false);
   const [batchStrategyCurrentIndex, setBatchStrategyCurrentIndex] = useState(-1);
@@ -4108,8 +4113,8 @@ const App: React.FC = () => {
       // Detectar idioma por dominio: wall-trends es inglés, resto según config
       const isEnglishDomain = toHostname(creds.domain).includes('wall-trends');
       const lang = isEnglishDomain ? 'en' : (communicationLanguageRef.current || communicationLanguage || 'es');
-      addLog(`📝 Feedback: "${feedbackText.trim().slice(0, 100)}..." (idioma: ${lang})`);
-      const modified = await applyFeedbackToArticle(existingTitle, existingContent, feedbackText.trim(), lang);
+      addLog(`📝 Feedback: "${feedbackText.trim().slice(0, 100)}..." (idioma: ${lang}${feedbackTone ? ` | tono: ${feedbackTone}` : ''})`);
+      const modified = await applyFeedbackToArticle(existingTitle, existingContent, feedbackText.trim(), lang, feedbackTone || undefined);
       addLog(`✅ Gemini aplicó los cambios (título: "${modified.title.slice(0, 60)}")`);
 
       // Guardar datos para el paso de publicación
@@ -4243,6 +4248,10 @@ const App: React.FC = () => {
     setStrategyPdfStatus('idle');
     setStrategyPdfUrl('');
     setStrategyPdfMsg('');
+    setStrategyDeliverableUrl('');
+    setStrategyChartLabels([]);
+    setStrategyChartData([]);
+    setStrategyTotalKeywords(0);
   };
 
   const handleStrategyFlow = async () => {
@@ -4270,8 +4279,17 @@ const App: React.FC = () => {
 
       const detectedBusinessName = extractStrategyBusinessName(briefData) || '';
       const detectedWebsite = extractStrategyWebsite(briefData);
-      const detectedLanguage = 'Español';
-      const keywordSeed = detectedBusinessName || 'seo local';
+
+      // Detect communication language from brief
+      let rawLang: CommunicationLanguage | null = null;
+      if (typeof briefData === 'string' && briefData.includes('<')) {
+        rawLang = extractCommunicationLanguageFromBriefHTML(briefData);
+      } else if (typeof briefData === 'string') {
+        rawLang = extractCommunicationLanguageFromText(briefData);
+      }
+      const detectedLangCode: CommunicationLanguage = rawLang ?? 'spanish';
+      const detectedLanguage = formatLanguageLabel(detectedLangCode);
+
       const strategyMiniBrief = [
         detectedBusinessName ? `Nombre del Negocio: ${detectedBusinessName}` : null,
         detectedWebsite ? `Tengo página web: ${detectedWebsite}` : 'Tengo página web: No'
@@ -4296,6 +4314,7 @@ const App: React.FC = () => {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               businessName: detectedBusinessName,
+              language: detectedLangCode,
             }),
           });
           if (!response.ok) {
@@ -4329,13 +4348,70 @@ const App: React.FC = () => {
         return;
       }
 
-      setStrategyStatusMsg('Analizando la web del cliente con Gemini...');
+      // 1. Try SE Ranking first, then fall back to Gemini
+      setStrategyStatusMsg('Obteniendo datos SEO de SE Ranking...');
       addLog(`🧭 Estrategia SEO: analizando ${detectedWebsite}`);
-      const result = await analyzeSeoStrategy(
-        detectedWebsite,
-        detectedBusinessName || undefined,
-        strategyMiniBrief,
-      );
+
+      let seRankingData: any = null;
+      let trafficGrowthPercent = '0';
+      let chartLabels: string[] = [];
+      let chartData: number[] = [];
+
+      try {
+        const seRes = await fetch('/api/se-ranking/analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ website: detectedWebsite }),
+        });
+        if (seRes.ok) {
+          seRankingData = await seRes.json();
+          trafficGrowthPercent = seRankingData.traffic_growth_percent ?? '0';
+          chartLabels = seRankingData.chart_labels ?? [];
+          chartData   = seRankingData.chart_data ?? [];
+          setStrategyChartLabels(seRankingData.chart_labels ?? []);
+          setStrategyChartData(seRankingData.chart_data ?? []);
+          setStrategyTotalKeywords(seRankingData.keywords_count || 0);
+          if (seRankingData.errors?.length) {
+            addLog(`⚠️ SE Ranking (errores internos): ${seRankingData.errors.join(' | ')}`);
+          } else {
+            addLog(`✅ SE Ranking: ${seRankingData.monthly_visits} visitas/mes, ${seRankingData.top_keywords?.length ?? 0} keywords`);
+          }
+        }
+      } catch (seErr: any) {
+        addLog(`⚠️ SE Ranking no disponible: ${seErr.message} — usando Gemini`);
+      }
+
+      // 2. Check if SE Ranking returned enough keywords; fall back to Gemini otherwise
+      const seKeywords: Array<{ keyword: string; position?: number }> = (seRankingData?.top_keywords ?? []).filter((k: any) => k.keyword);
+      const needsGemini = seKeywords.length < 5;
+
+      let result: any;
+      if (needsGemini) {
+        setStrategyStatusMsg('Completando análisis con Gemini...');
+        addLog(`🤖 SE Ranking devolvió ${seKeywords.length} keywords — completando con Gemini`);
+        const geminiResult = await analyzeSeoStrategy(
+          detectedWebsite,
+          detectedBusinessName || undefined,
+          strategyMiniBrief,
+        );
+        // Merge: SE Ranking traffic if available, Gemini speed/health, combined keywords
+        const mergedKeywords = [
+          ...seKeywords,
+          ...(geminiResult.top_keywords ?? []),
+        ].slice(0, 5);
+        result = {
+          ...geminiResult,
+          monthly_visits: seRankingData?.monthly_visits || geminiResult.monthly_visits,
+          top_keywords: mergedKeywords,
+        };
+      } else {
+        result = {
+          monthly_visits: seRankingData.monthly_visits,
+          site_speed_score: 0,
+          technical_health_score: 0,
+          top_keywords: seKeywords.slice(0, 5),
+        };
+      }
 
       setStrategyAnalysis(result);
       setStrategyStep('analysis');
@@ -4353,7 +4429,11 @@ const App: React.FC = () => {
           body: JSON.stringify({
             businessName: detectedBusinessName,
             websiteUrl: detectedWebsite,
+            language: detectedLangCode,
             analysis: result,
+            trafficGrowthPercent,
+            chartLabels,
+            chartData,
           }),
         });
         if (!response.ok) {
@@ -4366,6 +4446,8 @@ const App: React.FC = () => {
         if (ct.includes('application/pdf')) {
           const blob = await response.blob();
           const fileName = response.headers.get('x-file-name') || 'estrategia-seo.pdf';
+          const chartErr = response.headers.get('x-chart-error');
+          if (chartErr) addLog(`⚠️ Gráfica no insertada: ${chartErr}`);
           const url = URL.createObjectURL(blob);
           const a = document.createElement('a');
           a.href = url; a.download = fileName; a.click();
@@ -4376,6 +4458,7 @@ const App: React.FC = () => {
         } else {
           const data = await response.json();
           if (!data?.success) throw new Error(data?.error || 'Respuesta inválida del servidor');
+          if (data.chartError) addLog(`⚠️ Gráfica no insertada: ${data.chartError}`);
           setStrategyPdfStatus('success');
           setStrategyPdfUrl(data.driveUrl || data.localPath || '');
           setStrategyPdfMsg('PDF generado correctamente.');
@@ -4396,9 +4479,9 @@ const App: React.FC = () => {
       alert('Ingresa el Task UUID');
       return;
     }
-    if (!strategyPdfUrl) {
-      setStrategyStatus('error');
-      setStrategyStatusMsg('El PDF no tiene URL de Drive. Configura GOOGLE_STRATEGY_OUTPUT_FOLDER_ID en Vercel para que el PDF se suba automáticamente a Drive.');
+    const effectiveUrl = strategyPdfUrl || strategyDeliverableUrl.trim();
+    if (!effectiveUrl) {
+      alert('Ingresa la URL de la PPT o del entregable');
       return;
     }
 
@@ -4415,7 +4498,7 @@ const App: React.FC = () => {
     try {
       const syncResult = await syncMarketingActionDirect(
         strategyTaskUuid.trim(),
-        strategyPdfUrl,
+        effectiveUrl,
         'on_blog',
         ORBIDI_API_KEY,
         'strategy_seo',
@@ -4428,7 +4511,7 @@ const App: React.FC = () => {
       addLog('✅ Estrategia SEO cargada en Prodline (estado, imagen, fechas y revisión actualizados)');
       setStrategyStep('success');
       setStrategyStatus('success');
-      setStrategyStatusMsg(strategyPdfUrl);
+      setStrategyStatusMsg(effectiveUrl);
     } catch (e: any) {
       setStrategyStatus('error');
       setStrategyStatusMsg(e.message);
@@ -4437,22 +4520,24 @@ const App: React.FC = () => {
 
   // ── Estrategia Masiva ──────────────────────────────────────────────────────
 
-  const parseBatchStrategyCsv = (text: string) => {
+  const parseBatchStrategyCsv = (text: string): Array<{ account_uuid: string; task_uuid: string }> | string => {
     const lines = text.trim().split('\n').filter(l => l.trim());
-    if (lines.length < 2) return [];
+    if (lines.length < 2) return 'El CSV está vacío o solo tiene encabezados';
     const headers = lines[0].split(',').map(h => h.trim().toLowerCase().replace(/['"]/g, ''));
     const uuidIdx = headers.indexOf('account_uuid');
     const taskIdx = headers.indexOf('task_uuid');
-    if (uuidIdx === -1) return [];
+    if (uuidIdx === -1) return 'Falta la columna requerida: account_uuid';
+    if (taskIdx === -1) return 'Falta la columna requerida: task_uuid';
     return lines.slice(1).map(line => {
       const cols = line.split(',').map(c => c.trim().replace(/^["']|["']$/g, ''));
-      return { account_uuid: cols[uuidIdx] || '', task_uuid: taskIdx >= 0 ? (cols[taskIdx] || '') : '' };
-    }).filter(r => r.account_uuid);
+      return { account_uuid: cols[uuidIdx] || '', task_uuid: cols[taskIdx] || '' };
+    }).filter(r => r.account_uuid && r.task_uuid);
   };
 
-  const processBatchStrategyRowFn = async (row: { account_uuid: string }): Promise<{
-    businessName: string; website: string; hasWebsite: boolean; driveUrl: string;
-  }> => {
+  const processBatchStrategyRowFn = async (
+    row: { account_uuid: string; task_uuid: string },
+    apiKey: string,
+  ): Promise<{ businessName: string; website: string; hasWebsite: boolean; driveUrl: string; prodlineOk: boolean }> => {
     const rawText = await fetchBriefByUuid(row.account_uuid);
     let briefData: any;
     if (rawText.toLowerCase().includes('<!doctype html') || rawText.includes('<html')) {
@@ -4466,15 +4551,27 @@ const App: React.FC = () => {
 
     const businessName = extractStrategyBusinessName(briefData) || '';
     const website = extractStrategyWebsite(briefData) || '';
+
+    // Detect language
+    let rawLang: CommunicationLanguage | null = null;
+    if (typeof briefData === 'string' && briefData.includes('<')) {
+      rawLang = extractCommunicationLanguageFromBriefHTML(briefData);
+    } else if (typeof briefData === 'string') {
+      rawLang = extractCommunicationLanguageFromText(briefData);
+    }
+    const langCode: CommunicationLanguage = rawLang ?? 'spanish';
+
     const miniBrief = [
       businessName ? `Nombre del Negocio: ${businessName}` : null,
       website ? `Tengo página web: ${website}` : 'Tengo página web: No',
     ].filter(Boolean).join('\n');
 
+    let driveUrl = '';
+
     if (!website) {
       const res = await fetch('/api/google-drive/generate-strategy-no-website-pdf', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ businessName }),
+        body: JSON.stringify({ businessName, language: langCode }),
       });
       if (!res.ok) {
         const txt = await res.text();
@@ -4482,36 +4579,86 @@ const App: React.FC = () => {
         throw new Error(err?.error || `Error ${res.status}`);
       }
       const ct = res.headers.get('content-type') || '';
-      if (ct.includes('application/pdf')) return { businessName, website: '', hasWebsite: false, driveUrl: '' };
-      const data = await res.json();
-      if (!data?.success) throw new Error(data?.error || 'Respuesta inválida');
-      return { businessName, website: '', hasWebsite: false, driveUrl: data.driveUrl || data.localPath || '' };
+      if (!ct.includes('application/pdf')) {
+        const data = await res.json();
+        if (!data?.success) throw new Error(data?.error || 'Respuesta inválida');
+        driveUrl = data.driveUrl || data.localPath || '';
+      }
+    } else {
+      // SE Ranking → Gemini fallback
+      let seData: any = null;
+      let trafficGrowthPercent = '0';
+      let chartLabels: string[] = [];
+      let chartDataArr: number[] = [];
+      try {
+        const seRes = await fetch('/api/se-ranking/analyze', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ website }),
+        });
+        if (seRes.ok) {
+          seData = await seRes.json();
+          trafficGrowthPercent = seData.traffic_growth_percent ?? '0';
+          chartLabels  = seData.chart_labels ?? [];
+          chartDataArr = seData.chart_data ?? [];
+        }
+      } catch { /* SE Ranking unavailable */ }
+
+      const seKeywords = (seData?.top_keywords ?? []).filter((k: any) => k.keyword);
+      let analysis: any;
+      if (seKeywords.length >= 5) {
+        analysis = {
+          monthly_visits: seData.monthly_visits,
+          site_speed_score: 0,
+          technical_health_score: 0,
+          top_keywords: seKeywords.slice(0, 5),
+        };
+      } else {
+        const gemini = await analyzeSeoStrategy(website, businessName || undefined, miniBrief);
+        analysis = {
+          ...gemini,
+          monthly_visits: seData?.monthly_visits || gemini.monthly_visits,
+          top_keywords: [...seKeywords, ...(gemini.top_keywords ?? [])].slice(0, 5),
+        };
+      }
+
+      const res = await fetch('/api/google-drive/generate-strategy-pdf', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          businessName, websiteUrl: website, language: langCode,
+          analysis, trafficGrowthPercent, chartLabels, chartData: chartDataArr,
+        }),
+      });
+      if (!res.ok) {
+        const txt = await res.text();
+        let err: any = {}; try { err = JSON.parse(txt); } catch {}
+        throw new Error(err?.error || `Error ${res.status}`);
+      }
+      const ct = res.headers.get('content-type') || '';
+      if (!ct.includes('application/pdf')) {
+        const data = await res.json();
+        if (!data?.success) throw new Error(data?.error || 'Respuesta inválida');
+        driveUrl = data.driveUrl || data.localPath || '';
+      }
     }
 
-    const analysis = await analyzeSeoStrategy(website, businessName || undefined, miniBrief);
-    const res = await fetch('/api/google-drive/generate-strategy-pdf', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ businessName, websiteUrl: website, analysis }),
-    });
-    if (!res.ok) {
-      const txt = await res.text();
-      let err: any = {}; try { err = JSON.parse(txt); } catch {}
-      throw new Error(err?.error || `Error ${res.status}`);
+    // Prodline: solo si tenemos Drive URL
+    let prodlineOk = false;
+    if (driveUrl && row.task_uuid) {
+      const sync = await syncMarketingActionDirect(row.task_uuid, driveUrl, 'on_blog', apiKey, 'strategy_seo');
+      prodlineOk = sync.success;
+      if (!sync.success) throw new Error(`PDF OK, Prodline falló: ${sync.error}`);
     }
-    const ct = res.headers.get('content-type') || '';
-    if (ct.includes('application/pdf')) return { businessName, website, hasWebsite: true, driveUrl: '' };
-    const data = await res.json();
-    if (!data?.success) throw new Error(data?.error || 'Respuesta inválida');
-    return { businessName, website, hasWebsite: true, driveUrl: data.driveUrl || data.localPath || '' };
+
+    return { businessName, website, hasWebsite: !!website, driveUrl, prodlineOk };
   };
 
   const startBatchStrategy = async () => {
     if (batchStrategyRows.length === 0) { alert('No hay filas cargadas'); return; }
     setBatchStrategyRunning(true);
-    type BSResult = { account_uuid: string; task_uuid: string; status: 'pending'|'running'|'done'|'error'; businessName: string; website: string; hasWebsite: boolean; driveUrl: string; error: string; };
+    type BSResult = { account_uuid: string; task_uuid: string; status: 'pending'|'running'|'done'|'error'; businessName: string; website: string; hasWebsite: boolean; driveUrl: string; prodlineOk: boolean; error: string; };
     const results: BSResult[] = batchStrategyRows.map(r => ({
       ...r, status: 'pending',
-      businessName: '', website: '', hasWebsite: false, driveUrl: '', error: '',
+      businessName: '', website: '', hasWebsite: false, driveUrl: '', prodlineOk: false, error: '',
     }));
     setBatchStrategyResults([...results]);
 
@@ -4520,7 +4667,7 @@ const App: React.FC = () => {
       results[i] = { ...results[i], status: 'running' };
       setBatchStrategyResults([...results]);
       try {
-        const r = await processBatchStrategyRowFn(batchStrategyRows[i]);
+        const r = await processBatchStrategyRowFn(batchStrategyRows[i], import.meta.env.VITE_ORBIDI_API_KEY || '');
         results[i] = { ...results[i], ...r, status: 'done' };
       } catch (e: any) {
         results[i] = { ...results[i], status: 'error', error: e.message };
@@ -5046,7 +5193,7 @@ const App: React.FC = () => {
       urlMapRef.current[rowIdx][artIdx] = result.url;
       addLog(`🗺️ URL mapeada: cuenta[${rowIdx}] artículo[${artIdx}]`);
       addLog(`📊 URLs acumuladas: ${publishedUrlsRef.current.length}`);
-      
+
       // Agregar al estado (para UI)
       setBatchProgress(prev => ({
         ...prev,
@@ -5598,7 +5745,7 @@ const App: React.FC = () => {
                       <div className="space-y-4">
                         <div>
                           <label className="text-[10px] font-black uppercase text-[#A4D62C] mb-3 block tracking-widest">Cargar CSV</label>
-                          <p className="text-xs text-slate-500 mb-3">Columna requerida: <code className="bg-slate-100 px-1 rounded font-mono">account_uuid</code>. Columna opcional: <code className="bg-slate-100 px-1 rounded font-mono">task_uuid</code> (ignorada por ahora).</p>
+                          <p className="text-xs text-slate-500 mb-3">Columnas requeridas: <code className="bg-slate-100 px-1 rounded font-mono">account_uuid</code> · <code className="bg-slate-100 px-1 rounded font-mono">task_uuid</code></p>
                           <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-slate-300 rounded-2xl cursor-pointer hover:border-[#A4D62C] transition-all bg-slate-50">
                             <i className="fas fa-file-csv text-3xl text-slate-400 mb-2"></i>
                             <span className="text-sm text-slate-500 font-semibold">Haz clic para seleccionar el archivo CSV</span>
@@ -5613,7 +5760,8 @@ const App: React.FC = () => {
                                 reader.onload = ev => {
                                   const text = ev.target?.result as string;
                                   const rows = parseBatchStrategyCsv(text);
-                                  if (rows.length === 0) { alert('No se encontró la columna account_uuid o el CSV está vacío'); return; }
+                                  if (typeof rows === 'string') { alert(rows); return; }
+                                  if (rows.length === 0) { alert('El CSV no contiene filas válidas (account_uuid y task_uuid requeridos)'); return; }
                                   setBatchStrategyRows(rows);
                                   setBatchStrategyResults([]);
                                 };
@@ -5883,6 +6031,24 @@ const App: React.FC = () => {
                           />
                         </div>
 
+                        {/* Tono del artículo */}
+                        <div>
+                          <label className="text-[10px] font-black uppercase text-[#A4D62C] mb-3 block tracking-widest">
+                            Tono
+                          </label>
+                          <select
+                            className="w-full px-6 py-4 rounded-2xl bg-slate-50 border-2 border-transparent focus:border-[#A4D62C] outline-none text-sm"
+                            value={feedbackTone}
+                            onChange={e => setFeedbackTone(e.target.value)}
+                          >
+                            <option value="">— Sin cambio de tono —</option>
+                            <option value="Nosotros a tu">Nosotros a tu</option>
+                            <option value="Yo a tu">Yo a tu</option>
+                            <option value="Yo a ustedes">Yo a ustedes</option>
+                            <option value="Nosotros a vosotros">Nosotros a vosotros</option>
+                          </select>
+                        </div>
+
                         {/* Task UUID para Prodline */}
                         <div>
                           <label className="text-[10px] font-black uppercase text-[#A4D62C] mb-3 block tracking-widest">
@@ -6014,14 +6180,18 @@ const App: React.FC = () => {
                                 <h4 className="text-lg font-black text-emerald-900">Resultado del análisis SEO</h4>
                               </div>
                               <p className="text-sm text-emerald-900 font-semibold">
-                                Gemini respondió las 4 preguntas clave del diagnóstico SEO del sitio.
+                                Gemini respondió las métricas clave del diagnóstico SEO del sitio y estimó la evolución de visitas de los últimos 6 meses.
                               </p>
                             </div>
 
-                            <div className="grid md:grid-cols-3 gap-4">
+                            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                               <div className="rounded-2xl border border-slate-200 p-5 bg-white">
-                                <p className="text-[10px] uppercase tracking-widest font-black text-[#A4D62C] mb-2">Visitas al mes</p>
-                                <p className="text-3xl font-black text-slate-900">{strategyAnalysis.monthly_visits}</p>
+                                <p className="text-[10px] uppercase tracking-widest font-black text-[#A4D62C] mb-2">Tráfico total</p>
+                                <p className="text-3xl font-black text-slate-900">{strategyAnalysis.monthly_visits.toLocaleString()}</p>
+                              </div>
+                              <div className="rounded-2xl border border-slate-200 p-5 bg-white">
+                                <p className="text-[10px] uppercase tracking-widest font-black text-[#A4D62C] mb-2">Palabras clave</p>
+                                <p className="text-3xl font-black text-slate-900">{strategyTotalKeywords > 0 ? strategyTotalKeywords.toLocaleString() : '—'}</p>
                               </div>
                               <div className="rounded-2xl border border-slate-200 p-5 bg-white">
                                 <p className="text-[10px] uppercase tracking-widest font-black text-[#A4D62C] mb-2">Velocidad de carga</p>
@@ -6032,6 +6202,37 @@ const App: React.FC = () => {
                                 <p className="text-3xl font-black text-slate-900">{strategyAnalysis.technical_health_score}<span className="text-base text-slate-400">/100</span></p>
                               </div>
                             </div>
+
+                            {strategyChartLabels.length >= 2 && (
+                              <div className="rounded-2xl border border-slate-200 p-5 bg-white">
+                                <div className="flex items-center justify-between mb-1">
+                                  <p className="text-[10px] uppercase tracking-widest font-black text-[#A4D62C]">Evolución de Visitas</p>
+                                  <span className="text-[10px] text-slate-400 font-semibold">Últimos 6 meses</span>
+                                </div>
+                                <p className="text-[10px] text-slate-400 mb-4">SE Ranking API — aproximación del módulo Investigación de la competencia (US)</p>
+                                {(() => {
+                                  const W = 540, H = 90, padL = 10, padR = 10, padT = 32, padB = 22;
+                                  const n = strategyChartLabels.length;
+                                  const maxV = Math.max(...strategyChartData, 1);
+                                  const xFor = (i: number) => padL + i * (W / (n - 1));
+                                  const yFor = (v: number) => padT + H - (v / maxV) * H;
+                                  const pts = strategyChartData.map((v, i) => ({ x: xFor(i), y: yFor(v), v, lbl: strategyChartLabels[i].slice(0, 3).toUpperCase() }));
+                                  const polyline = pts.map(p => `${p.x},${p.y}`).join(' ');
+                                  return (
+                                    <svg viewBox={`0 0 ${W + padL + padR} ${H + padT + padB}`} className="w-full" style={{ overflow: 'visible' }}>
+                                      <polyline points={polyline} fill="none" stroke="#A4D62C" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+                                      {pts.map((p, i) => (
+                                        <g key={i}>
+                                          <circle cx={p.x} cy={p.y} r="5" fill="#A4D62C" />
+                                          <text x={p.x} y={p.y - 10} textAnchor="middle" fontSize="11" fontWeight="700" fill="#1e293b">{p.v.toLocaleString()}</text>
+                                          <text x={p.x} y={H + padT + padB - 2} textAnchor="middle" fontSize="9.5" fontWeight="600" fill="#94a3b8">{p.lbl}</text>
+                                        </g>
+                                      ))}
+                                    </svg>
+                                  );
+                                })()}
+                              </div>
+                            )}
 
                             <div className="rounded-2xl border border-slate-200 p-5 bg-white">
                               <p className="text-[10px] uppercase tracking-widest font-black text-[#A4D62C] mb-3">Top 5 keywords del sitio</p>
@@ -6066,8 +6267,14 @@ const App: React.FC = () => {
                                   </div>
                                   {strategyPdfUrl && (
                                     <div className="rounded-2xl bg-white border border-slate-200 p-4">
-                                      <p className="text-[10px] uppercase tracking-widest font-black text-[#A4D62C] mb-2">PDF en Google Drive</p>
-                                      <a href={strategyPdfUrl} target="_blank" rel="noopener noreferrer" className="text-sm text-blue-600 hover:underline break-all">{strategyPdfUrl}</a>
+                                      <p className="text-[10px] uppercase tracking-widest font-black text-[#A4D62C] mb-2">
+                                        {strategyPdfUrl.startsWith('http') ? 'PDF en Google Drive' : 'Ruta local del PDF'}
+                                      </p>
+                                      {strategyPdfUrl.startsWith('http') ? (
+                                        <a href={strategyPdfUrl} target="_blank" rel="noopener noreferrer" className="text-sm text-blue-600 hover:underline break-all">{strategyPdfUrl}</a>
+                                      ) : (
+                                        <p className="text-sm text-slate-600 break-all font-mono">{strategyPdfUrl}</p>
+                                      )}
                                     </div>
                                   )}
                                 </div>
@@ -6081,16 +6288,22 @@ const App: React.FC = () => {
                             </div>
 
                             <div className="rounded-[2rem] border border-slate-200 bg-slate-50 p-6 space-y-4">
-                              <h4 className="text-lg font-black text-slate-900">Cargar en Prodline</h4>
+                              <h4 className="text-lg font-black text-slate-900">Cargar PPT / entregable en Prodline</h4>
                               {strategyPdfUrl ? (
                                 <div className="flex items-start gap-3 p-3 bg-green-50 border border-green-200 rounded-2xl text-green-800 text-xs">
                                   <i className="fas fa-link mt-0.5 flex-shrink-0"></i>
                                   <span className="break-all">Entregable: <a href={strategyPdfUrl} target="_blank" rel="noopener noreferrer" className="underline">{strategyPdfUrl}</a></span>
                                 </div>
                               ) : (
-                                <div className="flex items-start gap-3 p-3 bg-amber-50 border border-amber-200 rounded-2xl text-amber-800 text-xs">
-                                  <i className="fas fa-exclamation-triangle mt-0.5 flex-shrink-0"></i>
-                                  <span>PDF sin URL de Drive. Configura <code className="font-mono bg-amber-100 px-1 rounded">GOOGLE_STRATEGY_OUTPUT_FOLDER_ID</code> para activar el envío automático.</span>
+                                <div>
+                                  <label className="text-[10px] font-black uppercase text-[#A4D62C] mb-2 block tracking-widest">URL de la PPT o del entregable</label>
+                                  <input
+                                    type="url"
+                                    className="w-full px-5 py-4 rounded-2xl bg-white border-2 border-transparent focus:border-[#A4D62C] outline-none font-mono text-sm"
+                                    placeholder="https://drive.google.com/... o URL pública del entregable"
+                                    value={strategyDeliverableUrl}
+                                    onChange={e => setStrategyDeliverableUrl(e.target.value)}
+                                  />
                                 </div>
                               )}
                               <div>
@@ -6105,9 +6318,9 @@ const App: React.FC = () => {
                               </div>
                               <button
                                 onClick={handleStrategyProdlineSubmit}
-                                disabled={strategyStatus === 'loading' || !strategyPdfUrl}
+                                disabled={strategyStatus === 'loading'}
                                 className={`w-full font-black py-5 rounded-3xl transition-all text-lg flex items-center justify-center gap-3 ${
-                                  strategyStatus === 'loading' || !strategyPdfUrl ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-[#A4D62C] text-white hover:bg-[#8DB525]'
+                                  strategyStatus === 'loading' ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-[#A4D62C] text-white hover:bg-[#8DB525]'
                                 }`}
                               >
                                 {strategyStatus === 'loading'
@@ -6165,16 +6378,22 @@ const App: React.FC = () => {
 
                             {strategyPdfStatus === 'success' && (
                               <div className="rounded-[2rem] border border-amber-200 bg-white p-5 space-y-4 mt-2">
-                                <h4 className="text-base font-black text-slate-900">Cargar en Prodline</h4>
+                                <h4 className="text-base font-black text-slate-900">Cargar PPT / entregable en Prodline</h4>
                                 {strategyPdfUrl ? (
                                   <div className="flex items-start gap-2 p-3 bg-green-50 border border-green-200 rounded-2xl text-green-800 text-xs">
                                     <i className="fas fa-link mt-0.5 flex-shrink-0"></i>
                                     <span className="break-all">Entregable listo: <a href={strategyPdfUrl} target="_blank" rel="noopener noreferrer" className="underline">{strategyPdfUrl}</a></span>
                                   </div>
                                 ) : (
-                                  <div className="flex items-start gap-2 p-3 bg-amber-50 border border-amber-200 rounded-2xl text-amber-800 text-xs">
-                                    <i className="fas fa-exclamation-triangle mt-0.5 flex-shrink-0"></i>
-                                    <span>PDF sin URL de Drive. Configura <code className="font-mono bg-amber-100 px-1 rounded">GOOGLE_STRATEGY_OUTPUT_FOLDER_ID</code>.</span>
+                                  <div>
+                                    <label className="text-[10px] font-black uppercase text-[#A4D62C] mb-2 block tracking-widest">URL de la PPT o del entregable</label>
+                                    <input
+                                      type="url"
+                                      className="w-full px-5 py-4 rounded-2xl bg-slate-50 border-2 border-transparent focus:border-[#A4D62C] outline-none font-mono text-sm"
+                                      placeholder="https://drive.google.com/... o URL pública del entregable"
+                                      value={strategyDeliverableUrl}
+                                      onChange={e => setStrategyDeliverableUrl(e.target.value)}
+                                    />
                                   </div>
                                 )}
                                 <div>
@@ -6201,9 +6420,9 @@ const App: React.FC = () => {
                                 )}
                                 <button
                                   onClick={handleStrategyProdlineSubmit}
-                                  disabled={strategyStatus === 'loading' || !strategyPdfUrl || strategyStatus === 'success'}
+                                  disabled={strategyStatus === 'loading' || strategyStatus === 'success'}
                                   className={`w-full font-black py-4 rounded-3xl transition-all text-base flex items-center justify-center gap-3 ${
-                                    strategyStatus === 'loading' || !strategyPdfUrl || strategyStatus === 'success'
+                                    strategyStatus === 'loading' || strategyStatus === 'success'
                                       ? 'bg-slate-200 text-slate-400 cursor-not-allowed'
                                       : 'bg-[#A4D62C] text-white hover:bg-[#8DB525]'
                                   }`}

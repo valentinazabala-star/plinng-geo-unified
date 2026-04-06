@@ -100,6 +100,31 @@ export async function slidesRequest(endpoint: string, init: RequestInit = {}): P
   return data;
 }
 
+export async function driveCopyFile(fileId: string, name: string, parentId?: string): Promise<{ id: string }> {
+  const token = await getAccessToken();
+  const body: Record<string, unknown> = { name };
+  if (parentId) body.parents = [parentId];
+  const res = await fetch(
+    `${GOOGLE_DRIVE_BASE}/files/${encodeURIComponent(fileId)}/copy?supportsAllDrives=true&fields=id`,
+    {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    },
+  );
+  const data = await res.json() as { id: string };
+  if (!res.ok) throw new Error(JSON.stringify(data));
+  return data;
+}
+
+export async function driveDeleteFile(fileId: string): Promise<void> {
+  const token = await getAccessToken();
+  await fetch(
+    `${GOOGLE_DRIVE_BASE}/files/${encodeURIComponent(fileId)}?supportsAllDrives=true`,
+    { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } },
+  );
+}
+
 export async function driveExportPdf(fileId: string): Promise<Buffer> {
   const token = await getAccessToken();
   const res = await fetch(

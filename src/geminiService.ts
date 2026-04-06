@@ -1357,9 +1357,21 @@ Devuelve exactamente este esquema:
     existingTitle: string,
     existingHtml: string,
     feedback: string,
-    language?: string
+    language?: string,
+    tone?: string,
   ): Promise<{ title: string; content: string }> {
     const langProfile = resolveLanguageProfile(language);
+
+    const TONE_INSTRUCTIONS: Record<string, string> = {
+      'Nosotros a tu':       'Usa siempre "nosotros" como sujeto (ej: "te ofrecemos", "te ayudamos") y tutea al lector ("tú", "te", "tu"). Elimina cualquier uso de "vosotros", "ustedes", "yo" como sujeto principal.',
+      'Yo a tu':             'Usa siempre "yo" como sujeto (ej: "te ofrezco", "te ayudo") y tutea al lector ("tú", "te", "tu"). Elimina cualquier uso de "nosotros", "vosotros", "ustedes".',
+      'Yo a ustedes':        'Usa siempre "yo" como sujeto (ej: "les ofrezco", "les ayudo") y trata al lector de "ustedes" ("les", "su", "sus"). Elimina cualquier uso de "tú", "te", "vosotros", "nosotros".',
+      'Nosotros a vosotros': 'Usa siempre "nosotros" como sujeto (ej: "os ofrecemos", "os ayudamos") y trata al lector de "vosotros" ("os", "vuestro", "vuestra"). Elimina cualquier uso de "tú", "ustedes", "yo".',
+    };
+
+    const toneBlock = tone && TONE_INSTRUCTIONS[tone]
+      ? `\nTONO OBLIGATORIO (${tone}):\n${TONE_INSTRUCTIONS[tone]}\nEste cambio de tono se aplica en TODO el artículo, independientemente del feedback.\n`
+      : '';
 
     const prompt = `${langProfile.outputInstruction}
 
@@ -1374,6 +1386,7 @@ REGLAS FUNDAMENTALES:
 6. Si el feedback pide cambiar el enfoque → cambia el enfoque pero conserva el formato HTML.
 7. Lo que el feedback NO menciona → déjalo exactamente igual.
 8. NUNCA regeneres el artículo completo desde cero si el feedback no lo pide.
+${toneBlock}
 
 ${langProfile.grammarRules}
 

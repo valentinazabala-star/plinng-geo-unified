@@ -445,6 +445,134 @@ async function handleGenerateStrategyNoWebsitePdf(body) {
   });
 }
 
+// ── SE Ranking handler ────────────────────────────────────────────────────────
+
+const SE_RANKING_BASE = process.env.SE_RANKING_BASE_URL || 'https://api.seranking.com';
+const SE_RANKING_API_KEY = process.env.SE_RANKING_API_KEY || '';
+
+function normalizeDomain(url) {
+  return url
+    .replace(/^https?:\/\//i, '')
+    .replace(/^www\./i, '')
+    .replace(/\/.*$/, '')
+    .toLowerCase()
+    .trim();
+}
+
+function detectSeSource(domain) {
+  if (/\.es$/.test(domain))      return 'es';
+  if (/\.co\.uk$/.test(domain))  return 'uk';
+  if (/\.com\.mx$/.test(domain)) return 'mx';
+  if (/\.com\.ar$/.test(domain)) return 'ar';
+  if (/\.com\.co$/.test(domain)) return 'co';
+  if (/\.com\.pe$/.test(domain)) return 'pe';
+  if (/\.mx$/.test(domain))      return 'mx';
+  if (/\.ar$/.test(domain))      return 'ar';
+  if (/\.de$/.test(domain))      return 'de';
+  if (/\.fr$/.test(domain))      return 'fr';
+  if (/\.it$/.test(domain))      return 'it';
+  if (/\.pt$/.test(domain))      return 'pt';
+  if (/\.br$/.test(domain))      return 'br';
+  return 'us';
+}
+
+async function seRankingGet(path) {
+  const res = await fetch(`${SE_RANKING_BASE}${path}`, {
+    headers: { Authorization: `Token ${SE_RANKING_API_KEY}` },
+  });
+  if (!res.ok) {
+    const txt = await res.text();
+    throw new Error(`SE Ranking ${path} → ${res.status}: ${txt.slice(0, 300)}`);
+  }
+  return res.json();
+}
+
+function calcGrowthPct(history) {
+  if (history.length < 2) return '0';
+  const first = history[0].traffic ?? 0;
+  const last  = history[history.length - 1].traffic ?? 0;
+  if (!first) return last > 0 ? '+100' : '0';
+  const pct = Math.round(((last - first) / first) * 100);
+  return pct > 0 ? `+${pct}` : `${pct}`;
+}
+
+function monthLabelEs(year, month) {
+  const months = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+  return `${months[(month - 1) % 12]} ${String(year).slice(2)}`;
+}
+
+async function handleSeRankingAnalyze(body) {
+  const website = body?.website || '';
+  if (!website) throw new Error('website is required');
+
+  const domain = normalizeDomain(website);
+  const source = detectSeSource(domain);
+  const errors = [];
+
+  let monthlyVisits = 0;
+  let keywordsCount = 0;
+  try {
+    const overview = await seRankingGet(`/v1/domain/overview/worldwide?domain=${encodeURIComponent(domain)}`);
+    const organic = overview.organic?.[0] ?? {};
+    monthlyVisits = Number(organic.traffic_sum ?? 0);
+    keywordsCount = Number(organic.keywords_count ?? 0);
+  } catch (e) {
+    errors.push(`overview: ${e.message}`);
+  }
+
+  let topKeywords = [];
+  try {
+    const kwData = await seRankingGet(
+      `/v1/domain/keywords?source=${source}&domain=${encodeURIComponent(domain)}&type=organic&limit=10&order_field=traffic&order_type=desc`,
+    );
+    topKeywords = (Array.isArray(kwData) ? kwData : [])
+      .filter(k => k.keyword)
+      .map(k => ({
+        keyword:  String(k.keyword ?? ''),
+        position: Number(k.position ?? k.pos ?? 0),
+        volume:   Number(k.volume ?? k.vol ?? 0),
+      }))
+      .slice(0, 5);
+  } catch (e) {
+    errors.push(`keywords: ${e.message}`);
+  }
+
+  let trafficHistory = [];
+  let trafficGrowthPercent = '0';
+  try {
+    const histData = await seRankingGet(
+      `/v1/domain/overview/history?source=${source}&domain=${encodeURIComponent(domain)}&type=organic`,
+    );
+    trafficHistory = (Array.isArray(histData) ? histData : [])
+      .map(h => ({
+        date:    `${h.year}${String(h.month).padStart(2, '0')}`,
+        traffic: Number(h.traffic_sum ?? 0),
+        year:    Number(h.year),
+        month:   Number(h.month),
+      }))
+      .sort((a, b) => a.date.localeCompare(b.date))
+      .slice(-6);
+    trafficGrowthPercent = calcGrowthPct(trafficHistory);
+  } catch (e) {
+    errors.push(`history: ${e.message}`);
+  }
+
+  const chartLabels = trafficHistory.map(h => monthLabelEs(h.year, h.month));
+  const chartData   = trafficHistory.map(h => h.traffic);
+
+  return {
+    domain,
+    monthly_visits: monthlyVisits,
+    keywords_count: keywordsCount,
+    top_keywords:   topKeywords,
+    traffic_history: trafficHistory,
+    traffic_growth_percent: trafficGrowthPercent,
+    chart_labels: chartLabels,
+    chart_data:   chartData,
+    errors: errors.length ? errors : undefined,
+  };
+}
+
 const server = createServer(async (req, res) => {
   try {
     const reqUrl = new URL(req.url || '/', `http://${req.headers.host}`);
@@ -508,6 +636,11 @@ const server = createServer(async (req, res) => {
 
     if (reqUrl.pathname === '/api/google-drive/delete-file' && req.method === 'DELETE') {
       sendJson(res, 200, await handleDeleteFile(body));
+      return;
+    }
+
+    if (reqUrl.pathname === '/api/se-ranking/analyze' && req.method === 'POST') {
+      sendJson(res, 200, await handleSeRankingAnalyze(body));
       return;
     }
 
