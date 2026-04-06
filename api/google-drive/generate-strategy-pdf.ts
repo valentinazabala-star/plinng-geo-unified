@@ -70,22 +70,32 @@ function getElementText(el: Record<string, unknown>): string {
   return `${el.title ?? ''} ${el.description ?? ''}`;
 }
 
-/** Recursively collect all leaf page elements (entering groups) */
-function flattenElements(
-  elements: Array<Record<string, unknown>>,
-  slideObjectId: string,
-): Array<{ el: Record<string, unknown>; slideId: string }> {
-  const out: Array<{ el: Record<string, unknown>; slideId: string }> = [];
-  for (const el of elements) {
-    const group = el.elementGroup as Record<string, unknown> | undefined;
+/**
+ * Find the element containing {{EV_TRAFICO}}.
+ * Returns the leaf element that has the text AND the top-level element
+ * (which could be a group). When inside a group we must use the top-level
+ * element's size/transform because child transforms are relative to the group.
+ */
+function findChartPlaceholder(
+  pageElements: Array<Record<string, unknown>>,
+): { leaf: Record<string, unknown>; topLevel: Record<string, unknown> } | null {
+  for (const topEl of pageElements) {
+    // Direct hit at top level
+    if (getElementText(topEl).includes('{{EV_TRAFICO}}')) {
+      return { leaf: topEl, topLevel: topEl };
+    }
+    // Search inside a group (one level deep is enough for typical templates)
+    const group = topEl.elementGroup as Record<string, unknown> | undefined;
     if (group) {
       const children = (group.children as Array<Record<string, unknown>>) ?? [];
-      out.push(...flattenElements(children, slideObjectId));
-    } else {
-      out.push({ el, slideId: slideObjectId });
+      for (const child of children) {
+        if (getElementText(child).includes('{{EV_TRAFICO}}')) {
+          return { leaf: child, topLevel: topEl };
+        }
+      }
     }
   }
-  return out;
+  return null;
 }
 
 async function insertTrafficChart(
@@ -100,10 +110,19 @@ async function insertTrafficChart(
   for (const slide of slides) {
     const slideId = String(slide.objectId ?? '');
     const pageElements = (slide.pageElements as Array<Record<string, unknown>>) ?? [];
-    const allElements = flattenElements(pageElements, slideId);
 
-    for (const { el } of allElements) {
-      if (!getElementText(el).includes('{{EV_TRAFICO}}')) continue;
+    const found = findChartPlaceholder(pageElements);
+    if (!found) continue;
+
+    const { leaf, topLevel } = found;
+    // Use the top-level element's size/transform (absolute screen coords).
+    // If the placeholder was inside a group, the group's bounds are what we want.
+    const targetSize      = topLevel.size;
+    const targetTransform = topLevel.transform;
+    // Delete the top-level element (shape or whole group)
+    const deleteObjectId  = topLevel.objectId;
+    // Suppress lint: leaf used only to confirm we found a match
+    void leaf;
 
       // Build and fetch chart image
       const chartUrl = buildChartUrl(labels, data);
@@ -129,19 +148,19 @@ async function insertTrafficChart(
       const publicUrl = `https://drive.google.com/uc?export=download&id=${imageFileId}`;
 
       try {
-        // Delete the placeholder shape and create an image at the exact same position/size
+        // Delete the top-level placeholder (shape or group) and create image at its exact bounds
         await slidesRequest(`/presentations/${encodeURIComponent(copyId)}:batchUpdate`, {
           method: 'POST',
           body: JSON.stringify({
             requests: [
-              { deleteObject: { objectId: el.objectId } },
+              { deleteObject: { objectId: deleteObjectId } },
               {
                 createImage: {
                   url: publicUrl,
                   elementProperties: {
                     pageObjectId: slideId,
-                    size: el.size,
-                    transform: el.transform,
+                    size: targetSize,
+                    transform: targetTransform,
                   },
                 },
               },
