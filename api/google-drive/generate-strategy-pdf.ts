@@ -56,14 +56,36 @@ function buildChartUrl(labels: string[], data: number[]): string {
   return `https://quickchart.io/chart?w=700&h=200&bkg=white&c=${encodeURIComponent(cfg)}`;
 }
 
-function extractElementText(el: Record<string, unknown>): string {
+function getElementText(el: Record<string, unknown>): string {
+  // shape text
   const shape = el.shape as Record<string, unknown> | undefined;
   const text  = shape?.text as Record<string, unknown> | undefined;
   const textElements = (text?.textElements as Array<Record<string, unknown>>) ?? [];
-  return textElements.map(te => {
+  const shapeText = textElements.map(te => {
     const tr = te.textRun as Record<string, unknown> | undefined;
     return String(tr?.content ?? '');
   }).join('');
+  if (shapeText) return shapeText;
+  // title / description (alt text on image placeholders)
+  return `${el.title ?? ''} ${el.description ?? ''}`;
+}
+
+/** Recursively collect all leaf page elements (entering groups) */
+function flattenElements(
+  elements: Array<Record<string, unknown>>,
+  slideObjectId: string,
+): Array<{ el: Record<string, unknown>; slideId: string }> {
+  const out: Array<{ el: Record<string, unknown>; slideId: string }> = [];
+  for (const el of elements) {
+    const group = el.elementGroup as Record<string, unknown> | undefined;
+    if (group) {
+      const children = (group.children as Array<Record<string, unknown>>) ?? [];
+      out.push(...flattenElements(children, slideObjectId));
+    } else {
+      out.push({ el, slideId: slideObjectId });
+    }
+  }
+  return out;
 }
 
 async function insertTrafficChart(
@@ -75,57 +97,65 @@ async function insertTrafficChart(
   const slides = (pres.slides as Array<Record<string, unknown>>) ?? [];
 
   for (const slide of slides) {
+    const slideId = String(slide.objectId ?? '');
     const pageElements = (slide.pageElements as Array<Record<string, unknown>>) ?? [];
-    for (const el of pageElements) {
-      if (extractElementText(el).includes('{{EV_TRAFICO}}')) {
-        const chartUrl = buildChartUrl(labels, data);
-        // Fetch the chart image and upload to Drive so Google Slides can access it reliably
-        const imgRes = await fetch(chartUrl);
-        if (!imgRes.ok) {
-          return { ok: false, error: `QuickChart fetch failed: ${imgRes.status}` };
-        }
-        const imgBuf = Buffer.from(await imgRes.arrayBuffer());
-        const uploadRes = await driveRequest(
-          `https://www.googleapis.com/upload/drive/v3/files?uploadType=media&fields=id`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'image/png' },
-            body: imgBuf,
-          },
-        ) as { id: string };
-        const imageFileId = uploadRes.id;
-        // Make file public so Slides API can read it
-        await driveRequest(`/files/${encodeURIComponent(imageFileId)}/permissions`, {
+    const allElements = flattenElements(pageElements, slideId);
+
+    for (const { el } of allElements) {
+      if (!getElementText(el).includes('{{EV_TRAFICO}}')) continue;
+
+      // Build and fetch chart image
+      const chartUrl = buildChartUrl(labels, data);
+      const imgRes = await fetch(chartUrl);
+      if (!imgRes.ok) {
+        return { ok: false, error: `QuickChart fetch failed: ${imgRes.status}` };
+      }
+      const imgBuf = Buffer.from(await imgRes.arrayBuffer());
+
+      // Upload image to Drive (temp file)
+      const uploadRes = await driveRequest(
+        `https://www.googleapis.com/upload/drive/v3/files?uploadType=media&fields=id`,
+        {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ role: 'reader', type: 'anyone' }),
-        });
-        const publicUrl = `https://drive.google.com/uc?export=download&id=${imageFileId}`;
-        try {
-          await slidesRequest(`/presentations/${encodeURIComponent(copyId)}:batchUpdate`, {
-            method: 'POST',
-            body: JSON.stringify({
-              requests: [
-                { deleteObject: { objectId: el.objectId } },
-                {
-                  createImage: {
-                    url: publicUrl,
-                    elementProperties: {
-                      pageObjectId: slide.objectId,
-                      size: el.size,
-                      transform: el.transform,
-                    },
+          headers: { 'Content-Type': 'image/png' },
+          body: imgBuf,
+        },
+      ) as { id: string };
+      const imageFileId = uploadRes.id;
+
+      // Make public so Slides API can read it
+      await driveRequest(`/files/${encodeURIComponent(imageFileId)}/permissions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role: 'reader', type: 'anyone' }),
+      });
+
+      const publicUrl = `https://drive.google.com/uc?export=download&id=${imageFileId}`;
+
+      try {
+        // Delete the placeholder shape and create an image at the exact same position/size
+        await slidesRequest(`/presentations/${encodeURIComponent(copyId)}:batchUpdate`, {
+          method: 'POST',
+          body: JSON.stringify({
+            requests: [
+              { deleteObject: { objectId: el.objectId } },
+              {
+                createImage: {
+                  url: publicUrl,
+                  elementProperties: {
+                    pageObjectId: slideId,
+                    size: el.size,
+                    transform: el.transform,
                   },
                 },
-              ],
-            }),
-          });
-        } finally {
-          // Clean up temp Drive file
-          await driveRequest(`/files/${encodeURIComponent(imageFileId)}?supportsAllDrives=true`, { method: 'DELETE' }).catch(() => {});
-        }
-        return { ok: true };
+              },
+            ],
+          }),
+        });
+      } finally {
+        await driveRequest(`/files/${encodeURIComponent(imageFileId)}?supportsAllDrives=true`, { method: 'DELETE' }).catch(() => {});
       }
+      return { ok: true };
     }
   }
   return { ok: false, error: 'placeholder {{EV_TRAFICO}} not found in any slide element' };
