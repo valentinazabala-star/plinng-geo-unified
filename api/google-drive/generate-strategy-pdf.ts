@@ -92,6 +92,7 @@ async function insertTrafficChart(
   copyId: string,
   labels: string[],
   data: number[],
+  outputFolderId?: string,
 ): Promise<{ ok: boolean; error?: string }> {
   const pres = await slidesRequest(`/presentations/${encodeURIComponent(copyId)}`) as Record<string, unknown>;
   const slides = (pres.slides as Array<Record<string, unknown>>) ?? [];
@@ -112,19 +113,14 @@ async function insertTrafficChart(
       }
       const imgBuf = Buffer.from(await imgRes.arrayBuffer());
 
-      // Upload image to Drive (temp file)
-      const uploadRes = await driveRequest(
-        `https://www.googleapis.com/upload/drive/v3/files?uploadType=media&fields=id`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'image/png' },
-          body: imgBuf,
-        },
-      ) as { id: string };
+      // Upload to Shared Drive folder (service accounts have no personal storage quota)
+      const metadata: Record<string, unknown> = { name: `_tmp_chart_${Date.now()}.png` };
+      if (outputFolderId) metadata.parents = [outputFolderId];
+      const uploadRes = await driveUploadMultipart(metadata, imgBuf, 'image/png');
       const imageFileId = uploadRes.id;
 
       // Make public so Slides API can read it
-      await driveRequest(`/files/${encodeURIComponent(imageFileId)}/permissions`, {
+      await driveRequest(`/files/${encodeURIComponent(imageFileId)}/permissions?supportsAllDrives=true`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ role: 'reader', type: 'anyone' }),
@@ -253,7 +249,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // 2. {{EV_TRAFICO}}: insert chart image if we have data, otherwise clear the placeholder
     if (chartLabels.length && chartData.length) {
-      const chartResult = await insertTrafficChart(copyId, chartLabels, chartData).catch(
+      const chartResult = await insertTrafficChart(copyId, chartLabels, chartData, outputFolderId || undefined).catch(
         (e: unknown) => ({ ok: false, error: String(e) }),
       );
       if (!chartResult.ok) {
