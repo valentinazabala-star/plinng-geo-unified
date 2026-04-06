@@ -28,13 +28,6 @@ const TEMPLATES = {
 function getTemplateId(language: string | undefined, hasWebsite: boolean): string {
   const isEnglish = (language ?? '').toLowerCase() === 'english';
   const group = isEnglish ? TEMPLATES.other : TEMPLATES.spanish;
-  // Allow env-var overrides for the Spanish-with-web template (legacy)
-  if (!isEnglish && hasWebsite && process.env.GOOGLE_STRATEGY_TEMPLATE_ID) {
-    return process.env.GOOGLE_STRATEGY_TEMPLATE_ID;
-  }
-  if (!isEnglish && !hasWebsite && process.env.GOOGLE_STRATEGY_NO_WEBSITE_TEMPLATE_ID) {
-    return process.env.GOOGLE_STRATEGY_NO_WEBSITE_TEMPLATE_ID;
-  }
   return hasWebsite ? group.withWeb : group.withoutWeb;
 }
 
