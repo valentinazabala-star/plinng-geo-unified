@@ -204,12 +204,6 @@ interface StrategyPdfResult {
   localPath: string;
 }
 
-const STRATEGY_TEMPLATE_IDS = {
-  spanishWebsite:       '1Z7dSM4xEM1o_HO_QKB8ApVEfx1GbDvML55MXWCil7xQ',
-  spanishNoWebsite:     '1__jgfwa9uZbD-7BxKwfIWr-wcN-OmEOKM_9hY47ws3Y',
-  nonSpanishWebsite:    '14RrS7WBqIltT4dffFc32m-Md2lH-FsaGlleDcIiS5Gs',
-  nonSpanishNoWebsite:  '1K0VEa036zLaYLCn5Ax7z2tuY2MRszTi_dUkUoLjBroE',
-} as const;
 
 const normalizeTemplateLanguageVariant = (raw: string | null | undefined): 'spanish' | 'non_spanish' | null => {
   if (!raw) return null;
@@ -4459,9 +4453,7 @@ const App: React.FC = () => {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              templateId: templateVariant === 'spanish'
-                ? STRATEGY_TEMPLATE_IDS.spanishNoWebsite
-                : STRATEGY_TEMPLATE_IDS.nonSpanishNoWebsite,
+              templateVariant,
               businessName: detectedBusinessName,
             }),
           });
@@ -4524,9 +4516,7 @@ const App: React.FC = () => {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            templateId: templateVariant === 'spanish'
-              ? STRATEGY_TEMPLATE_IDS.spanishWebsite
-              : STRATEGY_TEMPLATE_IDS.nonSpanishWebsite,
+            templateVariant,
             businessName: detectedBusinessName,
             websiteUrl: detectedWebsite,
             analysis: enrichedResult,
@@ -4619,12 +4609,7 @@ const App: React.FC = () => {
     if (!website) {
       const res = await fetch('/api/google-drive/generate-strategy-no-website-pdf', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          templateId: templateVariant === 'spanish'
-            ? STRATEGY_TEMPLATE_IDS.spanishNoWebsite
-            : STRATEGY_TEMPLATE_IDS.nonSpanishNoWebsite,
-          businessName,
-        }),
+        body: JSON.stringify({ templateVariant, businessName }),
       });
       const pdfResult = await parseStrategyPdfResponse(res, 'No se pudo generar el PDF sin web');
       driveUrl = pdfResult.localPath;
@@ -4657,9 +4642,7 @@ const App: React.FC = () => {
       const res = await fetch('/api/google-drive/generate-strategy-pdf', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          templateId: templateVariant === 'spanish'
-            ? STRATEGY_TEMPLATE_IDS.spanishWebsite
-            : STRATEGY_TEMPLATE_IDS.nonSpanishWebsite,
+          templateVariant,
           businessName,
           websiteUrl: website,
           analysis: enrichedAnalysis,

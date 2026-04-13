@@ -18,11 +18,12 @@ const TEMPLATE_NO_WEB: Record<string, string> = {
 };
 
 function getTemplateId(language: string | undefined): string {
-  const isEnglish = (language ?? '').toLowerCase() === 'english';
-  if (!isEnglish && process.env.GOOGLE_STRATEGY_NO_WEBSITE_TEMPLATE_ID) {
+  const isNonSpanish = (language ?? '').toLowerCase() === 'non_spanish'
+    || (language ?? '').toLowerCase() === 'english';
+  if (!isNonSpanish && process.env.GOOGLE_STRATEGY_NO_WEBSITE_TEMPLATE_ID) {
     return process.env.GOOGLE_STRATEGY_NO_WEBSITE_TEMPLATE_ID;
   }
-  return isEnglish ? TEMPLATE_NO_WEB.other : TEMPLATE_NO_WEB.spanish;
+  return isNonSpanish ? TEMPLATE_NO_WEB.other : TEMPLATE_NO_WEB.spanish;
 }
 
 // ─── Handler ──────────────────────────────────────────────────────────────────
@@ -32,8 +33,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method === 'OPTIONS') { res.status(200).json({ ok: true }); return; }
   if (req.method !== 'POST') { res.status(405).json({ error: 'Method not allowed' }); return; }
 
-  const body = req.body as { templateId?: string; businessName?: string; language?: string };
-  const templateId   = body.templateId || getTemplateId(body.language);
+  const body = req.body as { templateId?: string; templateVariant?: string; businessName?: string; language?: string };
+  const templateId   = body.templateId
+    || (body.templateVariant ? getTemplateId(body.templateVariant) : null)
+    || getTemplateId(body.language);
   const businessName = normalizeValue(body.businessName);
   const documentDate = formatDocumentDate();
 

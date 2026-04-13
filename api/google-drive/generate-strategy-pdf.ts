@@ -26,8 +26,10 @@ const TEMPLATES = {
 } as const;
 
 function getTemplateId(language: string | undefined, hasWebsite: boolean): string {
-  const isEnglish = (language ?? '').toLowerCase() === 'english';
-  const group = isEnglish ? TEMPLATES.other : TEMPLATES.spanish;
+  // Accept 'non_spanish' from templateVariant, or legacy 'english' language code
+  const isNonSpanish = (language ?? '').toLowerCase() === 'non_spanish'
+    || (language ?? '').toLowerCase() === 'english';
+  const group = isNonSpanish ? TEMPLATES.other : TEMPLATES.spanish;
   return hasWebsite ? group.withWeb : group.withoutWeb;
 }
 
@@ -208,6 +210,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const body = req.body as {
     templateId?: string;
+    templateVariant?: string;   // 'spanish' | 'non_spanish' — preferred over templateId
     businessName?: string;
     websiteUrl?: string;
     language?: string;
@@ -234,8 +237,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return;
   }
 
-  // Template ID: body override > language-based default
-  const templateId = body.templateId || getTemplateId(language, true);
+  // Template ID: explicit body.templateId > templateVariant > language fallback
+  const templateId = body.templateId
+    || (body.templateVariant ? getTemplateId(body.templateVariant, true) : null)
+    || getTemplateId(language, true);
 
   // ── Build replacements ─────────────────────────────────────────────────────
   const replacements = [
