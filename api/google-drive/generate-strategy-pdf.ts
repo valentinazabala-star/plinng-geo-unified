@@ -171,7 +171,6 @@ async function insertTrafficChart(
         await driveRequest(`/files/${encodeURIComponent(imageFileId)}?supportsAllDrives=true`, { method: 'DELETE' }).catch(() => {});
       }
       return { ok: true };
-    }
   }
   return { ok: false, error: 'placeholder {{EV_TRAFICO}} not found in any slide element' };
 }
@@ -182,8 +181,22 @@ interface TopKeyword { keyword: string; position?: number }
 interface StrategyAnalysis {
   top_keywords?: TopKeyword[];
   monthly_visits?: string | number;
+  monthly_visits_last_6_months?: number[];
   site_speed_score?: string | number;
   technical_health_score?: string | number;
+  growth_percentage?: number;
+  growth_direction?: 'up' | 'down' | 'flat';
+}
+
+function formatGrowthValue(pct: number | undefined, legacyStr?: string): string {
+  // Prefer numeric growth_percentage from enrichedResult
+  if (typeof pct === 'number') {
+    if (pct > 0) return `+${pct}`;
+    if (pct < 0) return `${pct}`;
+    return '0';
+  }
+  // Fall back to the old string field (e.g. "+18", "-5", "0")
+  return legacyStr ?? '0';
 }
 
 // ─── Handler ──────────────────────────────────────────────────────────────────
@@ -210,9 +223,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const analysis     = body.analysis || {};
   const topKeywords  = Array.isArray(analysis.top_keywords) ? analysis.top_keywords.slice(0, 5) : [];
   const documentDate = formatDocumentDate();
-  const growthPct    = body.trafficGrowthPercent ?? '0';
-  const chartLabels  = body.chartLabels ?? [];
-  const chartData    = body.chartData ?? [];
+  // {{POR_CRECIMIENTO}}: prefer numeric growth_percentage (new flow), fall back to legacy string
+  const growthPct    = formatGrowthValue(analysis.growth_percentage, body.trafficGrowthPercent);
+  // Chart data: prefer explicit body fields (old flow), fall back to monthly_visits_last_6_months
+  const chartData    = body.chartData?.length ? body.chartData : (analysis.monthly_visits_last_6_months ?? []);
+  const chartLabels  = body.chartLabels?.length ? body.chartLabels : [];
 
   if (topKeywords.length !== 5) {
     res.status(400).json({ error: 'Se requieren exactamente 5 keywords para generar la presentación' });
