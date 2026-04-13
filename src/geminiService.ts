@@ -51,6 +51,12 @@ export interface SeoKeywordInsight {
 
 export interface SeoStrategyAnalysis {
   monthly_visits: number;
+  keywords_count?: number;
+  monthly_visits_last_6_months: number[];
+  monthly_visits_source?: string;
+  selected_source?: string;
+  growth_percentage?: number;
+  growth_direction?: 'up' | 'down' | 'flat';
   site_speed_score: number;
   technical_health_score: number;
   top_keywords: SeoKeywordInsight[];
@@ -735,11 +741,12 @@ RESPONDE ÚNICAMENTE CON ESTE FORMATO JSON (ARRAY DE ${clusterSize} OBJETOS):
     location?: LocationContext,
     contentContext?: ContentContext,
     previousTitles?: string[],
+    contentAngle?: string,
   ): Promise<Partial<Article>> {
     const lang = resolveLanguageProfile(language);
     const masterPrompt = buildMasterPrompt(lang);
 
-    const outlineParams = { masterPrompt, langNameNative: lang.nameNative, topic, keywords, businessName, stage, location };
+    const outlineParams = { masterPrompt, langNameNative: lang.nameNative, topic, keywords, businessName, stage, location, contentAngle };
     let prompt = type === 'off_page'
       ? buildOffPageOutlinePrompt(outlineParams)
       : buildOnBlogOutlinePrompt(outlineParams);
@@ -1331,6 +1338,9 @@ Devuelve exactamente este esquema:
 
     const sanitized: SeoStrategyAnalysis = {
       monthly_visits: Math.max(0, Math.round(Number(parsed.monthly_visits) || 0)),
+      monthly_visits_last_6_months: Array.isArray(parsed.monthly_visits_last_6_months)
+        ? parsed.monthly_visits_last_6_months.slice(0, 6).map((value) => Math.max(0, Math.round(Number(value) || 0)))
+        : [],
       site_speed_score: Math.max(0, Math.min(100, Math.round(Number(parsed.site_speed_score) || 0))),
       technical_health_score: Math.max(0, Math.min(100, Math.round(Number(parsed.technical_health_score) || 0))),
       top_keywords: Array.isArray(parsed.top_keywords)
@@ -1345,7 +1355,125 @@ Devuelve exactamente este esquema:
       throw new Error('Gemini no devolvió exactamente 5 keywords.');
     }
 
+    if (sanitized.monthly_visits_last_6_months.length !== 6) {
+      const fallbackBase = sanitized.monthly_visits;
+      sanitized.monthly_visits_last_6_months = [0.72, 0.79, 0.86, 0.92, 0.97, 1].map((factor) =>
+        Math.max(0, Math.round(fallbackBase * factor))
+      );
+    }
+
     return sanitized;
+  }
+
+  async estimateTrafficGrowthPercentage(
+    monthlyVisitsLast6Months: number[],
+    businessName?: string,
+    websiteUrl?: string,
+  ): Promise<number> {
+    const sanitizedSeries = Array.isArray(monthlyVisitsLast6Months)
+      ? monthlyVisitsLast6Months.slice(0, 6).map((value) => Math.max(0, Math.round(Number(value) || 0)))
+      : [];
+
+    if (sanitizedSeries.length !== 6) {
+      throw new Error('Se requieren exactamente 6 valores para calcular el porcentaje de crecimiento.');
+    }
+
+    const fallback = (() => {
+      const first = sanitizedSeries[0];
+      const last = sanitizedSeries[sanitizedSeries.length - 1];
+      if (first <= 0) {
+        return Math.max(0, Math.min(100, last > 0 ? 100 : 0));
+      }
+      return Math.max(0, Math.min(100, Math.round((Math.abs(last - first) / first) * 100)));
+    })();
+
+    const prompt = `Eres un especialista SEO senior.
+
+Analiza esta evolución de tráfico mensual y responde únicamente con un JSON válido.
+
+DATOS:
+- Nombre del negocio: ${businessName || 'No especificado'}
+- URL del sitio: ${websiteUrl || 'No especificada'}
+- Serie de tráfico de los últimos 6 meses, del más antiguo al más reciente: [${sanitizedSeries.join(', ')}]
+
+OBJETIVO:
+Debes indicar un único porcentaje entero de 0 a 100 que represente cuánto ha crecido o cuánto ha bajado el tráfico entre el primer y el último mes de la serie.
+
+REGLAS:
+- Devuelve SOLO JSON válido.
+- Usa la clave "growth_percentage".
+- "growth_percentage" debe ser un entero entre 0 y 100.
+- Devuelve solo la magnitud del cambio, sin signo, sin símbolo %, sin texto adicional.
+
+Ejemplo de salida:
+{
+  "growth_percentage": 18
+}`;
+
+    try {
+      const text = await this.generateText({
+        model: MODELS.FLASH,
+        prompt,
+        temperature: 0.1,
+      });
+
+      const parsed = this.extractJSON<{ growth_percentage?: number }>(text);
+      return Math.max(0, Math.min(100, Math.round(Number(parsed?.growth_percentage) || fallback)));
+    } catch {
+      return fallback;
+    }
+  }
+
+  async generateSeoKeywordFallback(
+    websiteUrl: string,
+    businessName?: string,
+  ): Promise<SeoKeywordInsight[]> {
+    const prompt = `Eres un especialista SEO senior.
+
+Necesito que propongas exactamente 5 keywords SEO recomendadas para ayudar a posicionar mejor este sitio web.
+
+DATOS:
+- URL del sitio: ${websiteUrl}
+- Nombre del negocio: ${businessName || 'No especificado'}
+
+REGLAS:
+- Devuelve SOLO JSON válido.
+- Las keywords deben ser propuestas estratégicas, no necesariamente keywords que ya estén posicionadas hoy.
+- Deben ser términos realistas y útiles para mejorar el posicionamiento orgánico del cliente.
+- La "position" debe ser una posición aproximada estimada que el sitio podría tener o perseguir para esa keyword.
+- Usa exactamente este esquema:
+{
+  "top_keywords": [
+    { "keyword": "keyword 1", "position": 8 },
+    { "keyword": "keyword 2", "position": 14 },
+    { "keyword": "keyword 3", "position": 5 },
+    { "keyword": "keyword 4", "position": null },
+    { "keyword": "keyword 5", "position": 21 }
+  ]
+}
+- Deben ser exactamente 5 keywords.
+- "position" debe ser entero positivo o null.
+- No añadas texto fuera del JSON.`;
+
+    const text = await this.generateText({
+      model: MODELS.FLASH,
+      prompt,
+      temperature: 0.2,
+    });
+
+    const parsed = this.extractJSON<{ top_keywords?: SeoKeywordInsight[] }>(text);
+    const topKeywords = Array.isArray(parsed?.top_keywords)
+      ? parsed.top_keywords.slice(0, 5).map((item) => ({
+        keyword: String(item?.keyword || '').trim(),
+        position: item?.position == null ? null : Math.max(1, Math.round(Number(item.position) || 1)),
+      })).filter((item) => item.keyword.length > 0)
+      : [];
+
+    if (topKeywords.length !== 5) {
+      throw new Error('Gemini no pudo generar 5 keywords válidas.');
+    }
+
+    return topKeywords;
   }
 
   /**
@@ -1461,6 +1589,10 @@ export const analyzeWebsite =
   geminiService.analyzeWebsite.bind(geminiService);
 export const analyzeSeoStrategy =
   geminiService.analyzeSeoStrategy.bind(geminiService);
+export const estimateTrafficGrowthPercentage =
+  geminiService.estimateTrafficGrowthPercentage.bind(geminiService);
+export const generateSeoKeywordFallback =
+  geminiService.generateSeoKeywordFallback.bind(geminiService);
 export const applyFeedbackToArticle =
   geminiService.applyFeedbackToArticle.bind(geminiService);
 

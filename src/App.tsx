@@ -14,7 +14,8 @@ import {
   generateGmbPost,
   buildGmbImagePromptFn,
   analyzeWebsite,
-  analyzeSeoStrategy,
+  estimateTrafficGrowthPercentage,
+  generateSeoKeywordFallback,
   applyFeedbackToArticle,
 } from './geminiService';
 import type { GmbPost, SeoStrategyAnalysis } from './geminiService';
@@ -187,6 +188,113 @@ interface CsvRowV2 {
   task_uuid_offpage: string;     // UUIDs Prodline para off-page (comma-separated)
   task_uuid_postnoticias: string; // UUIDs Prodline para GMB (comma-separated)
 }
+
+// ── Estrategia SEO: interfaces, constantes y utilidades ───────────────────────
+
+interface StrategyBriefData {
+  businessName: string;
+  website: string;
+  languageLabel: string;
+  templateVariant: 'spanish' | 'non_spanish';
+  briefSummary: string;
+}
+
+interface StrategyPdfResult {
+  message: string;
+  localPath: string;
+}
+
+const STRATEGY_TEMPLATE_IDS = {
+  spanishWebsite:       '1Z7dSM4xEM1o_HO_QKB8ApVEfx1GbDvML55MXWCil7xQ',
+  spanishNoWebsite:     '1__jgfwa9uZbD-7BxKwfIWr-wcN-OmEOKM_9hY47ws3Y',
+  nonSpanishWebsite:    '14RrS7WBqIltT4dffFc32m-Md2lH-FsaGlleDcIiS5Gs',
+  nonSpanishNoWebsite:  '1K0VEa036zLaYLCn5Ax7z2tuY2MRszTi_dUkUoLjBroE',
+} as const;
+
+const normalizeTemplateLanguageVariant = (raw: string | null | undefined): 'spanish' | 'non_spanish' | null => {
+  if (!raw) return null;
+  const normalized = raw
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+  if (!normalized) return null;
+  if (['spanish', 'espanol', 'castellano', 'es'].includes(normalized)) return 'spanish';
+  if ([
+    'english', 'ingles', 'en',
+    'french', 'frances',
+    'portuguese', 'portugues',
+    'german', 'aleman', 'deutsch',
+    'italian', 'italiano',
+    'catalan',
+  ].includes(normalized)) return 'non_spanish';
+  return null;
+};
+
+const detectStrategyTemplateVariant = (rawBrief: string): 'spanish' | 'non_spanish' => {
+  const normalized = String(rawBrief || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+
+  const commentBlockMatch = normalized.match(/<!--([\s\S]*?field_communication_language[\s\S]*?)-->/i);
+  if (commentBlockMatch?.[1]) {
+    const valueMatches = [...commentBlockMatch[1].matchAll(/['"]value['"]\s*:\s*['"]([^'"\n]+)['"]/gi)];
+    if (valueMatches.length > 0) {
+      const selected = normalizeTemplateLanguageVariant(valueMatches[valueMatches.length - 1]?.[1]);
+      if (selected) return selected;
+    }
+  }
+
+  const communicationFieldBlock = normalized.match(/field_communication_language[\s\S]{0,3000}/i)?.[0];
+  if (communicationFieldBlock) {
+    const valueMatches = [...communicationFieldBlock.matchAll(/value\s*[:=]\s*['"]?([a-z_\-]+)['"]?/gi)];
+    if (valueMatches.length > 0) {
+      const selected = normalizeTemplateLanguageVariant(valueMatches[valueMatches.length - 1]?.[1]);
+      if (selected) return selected;
+    }
+  }
+
+  const explicitValueMatches = [...normalized.matchAll(/(?:communication_language|idioma|language)[\s\S]{0,220}?(?:selected|seleccionado|choice|option|value)\s*[:=]\s*['"]?([a-z_\-]+)['"]?/gi)];
+  if (explicitValueMatches.length > 0) {
+    const selected = normalizeTemplateLanguageVariant(explicitValueMatches[explicitValueMatches.length - 1]?.[1]);
+    if (selected) return selected;
+  }
+
+  const explicitInlineMatch = normalized.match(/(?:idioma|language|idioma de comunicacion)[\s\S]{0,160}?(english|ingles|spanish|espanol|castellano|frances|french|portugues|portuguese|aleman|german|deutsch|italiano|italian|catalan)/i);
+  const inlineVariant = normalizeTemplateLanguageVariant(explicitInlineMatch?.[1]);
+  if (inlineVariant) return inlineVariant;
+
+  const questionBlockMatch = normalized.match(/(?:en que idioma te quieres comunicar con tus clientes|what language do you want to use to communicate with your clients)[\s\S]{0,2000}/i);
+  if (questionBlockMatch?.[0]) {
+    const langsInBlock = [...questionBlockMatch[0].matchAll(/<p[^>]*>\s*([^<]+?)\s*<\/p>/gi)]
+      .map((match) => normalizeTemplateLanguageVariant(match[1]))
+      .filter((value): value is 'spanish' | 'non_spanish' => Boolean(value));
+    const unique = [...new Set(langsInBlock)];
+    if (unique.length === 1) return unique[0];
+  }
+
+  return 'spanish';
+};
+
+const getGrowthDirection = (visits: number[] | undefined): SeoStrategyAnalysis['growth_direction'] => {
+  const series = Array.isArray(visits)
+    ? visits.slice(0, 6).map((value) => Math.max(0, Math.round(Number(value) || 0)))
+    : [];
+  if (series.length < 2) return 'flat';
+  const first = series[0];
+  const last = series[series.length - 1];
+  if (last > first) return 'up';
+  if (last < first) return 'down';
+  return 'flat';
+};
+
+const buildLocalServerUrl = (endpoint: string) => {
+  if (typeof window !== 'undefined' && ['127.0.0.1', 'localhost'].includes(window.location.hostname)) {
+    return `http://127.0.0.1:8787${endpoint}`;
+  }
+  return endpoint;
+};
 
 // 🔧 Normaliza cualquier imagen base64 a 1536×864 usando canvas
 const resizeImageTo1536x864 = (base64Image: string): Promise<string> => {
@@ -3693,7 +3801,7 @@ const App: React.FC = () => {
     addLog(`🏷️ Nombre de negocio detectado (CSV): ${resolvedBusinessNameCSV ?? '(no detectado)'} (bloqueado para redaccion)`);
     const csvContentContext = contentContextRef.current || undefined;
     if (csvContentContext) addLog('🧠 Inyectando CONTENT CONTEXT en outline (batch)...');
-    const outline = await generateArticleOutline(topicForOutline, kws, outlineContentType, undefined, contentLanguage, undefined, undefined, csvContentContext, previousTitles.length > 0 ? previousTitles : undefined);
+    const outline = await generateArticleOutline(topicForOutline, kws, outlineContentType, undefined, contentLanguage, undefined, undefined, csvContentContext, previousTitles.length > 0 ? previousTitles : undefined, variationLabel);
 
     // sanitize titles and intro
     if (outline.title) outline.title = sanitizeTitle(outline.title);
@@ -4254,6 +4362,70 @@ const App: React.FC = () => {
     setStrategyTotalKeywords(0);
   };
 
+  const getStrategyBriefData = async (accountUuid: string): Promise<StrategyBriefData> => {
+    const rawText = await fetchBriefByUuid(accountUuid.trim());
+    const briefData = rawText.toLowerCase().includes('<!doctype html') || rawText.includes('<html')
+      ? rawText
+      : (() => { try { return JSON.parse(rawText); } catch { return rawText; } })();
+    const briefTextForTemplateDetection = typeof briefData === 'string'
+      ? briefData
+      : JSON.stringify(briefData);
+
+    const detectedBusinessName = extractStrategyBusinessName(briefData) || '';
+    const detectedWebsite = extractStrategyWebsite(briefData) || '';
+    const detectedLanguage = typeof briefData === 'string'
+      ? (extractCommunicationLanguageFromBriefHTML(briefData)
+         || extractCommunicationLanguageFromText(briefData)
+         || 'spanish')
+      : (extractCommunicationLanguageFromText(JSON.stringify(briefData)) || 'spanish');
+    const languageLabel = formatLanguageLabel(detectedLanguage);
+    const templateVariant = detectStrategyTemplateVariant(briefTextForTemplateDetection);
+
+    return {
+      businessName: detectedBusinessName,
+      website: detectedWebsite,
+      languageLabel,
+      templateVariant,
+      briefSummary: [
+        detectedBusinessName ? `Nombre del Negocio: ${detectedBusinessName}` : null,
+        detectedWebsite ? `Tengo página web: ${detectedWebsite}` : 'Tengo página web: No',
+        `Idioma de comunicación: ${languageLabel}`,
+      ].filter(Boolean).join('\n'),
+    };
+  };
+
+  const parseStrategyPdfResponse = async (
+    response: Response,
+    fallbackMessage: string,
+  ): Promise<StrategyPdfResult> => {
+    const contentType = response.headers.get('content-type') || '';
+
+    if (contentType.includes('application/pdf')) {
+      const blob = await response.blob();
+      const downloadUrl = URL.createObjectURL(blob);
+      const disposition = response.headers.get('content-disposition') || '';
+      const fileNameMatch = disposition.match(/filename="([^"]+)"/i);
+      const fileName = fileNameMatch?.[1] || response.headers.get('x-file-name') || 'estrategia-seo.pdf';
+      const link = document.createElement('a');
+      link.href = downloadUrl;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(downloadUrl);
+      return { message: 'PDF generado y descargado correctamente.', localPath: '' };
+    }
+
+    const data = await response.json();
+    if (!response.ok || !data?.success) {
+      throw new Error(data?.error || fallbackMessage);
+    }
+    return {
+      message: data.localPath ? 'PDF generado y guardado en local.' : 'PDF generado correctamente.',
+      localPath: data.driveUrl || data.localPath || '',
+    };
+  };
+
   const handleStrategyFlow = async () => {
     if (!strategyAccountUuid.trim()) {
       alert('Ingresa el Account UUID / ID del cliente');
@@ -4266,39 +4438,13 @@ const App: React.FC = () => {
     setStrategyStep('form');
 
     try {
-      const rawText = await fetchBriefByUuid(strategyAccountUuid.trim());
-      let briefData: any;
-      if (rawText.toLowerCase().includes('<!doctype html') || rawText.includes('<html')) {
-        briefData = rawText;
-      } else {
-        try { briefData = JSON.parse(rawText); } catch { briefData = rawText; }
-      }
-      if (typeof briefData === 'string' && !briefData.includes('<') && briefData.length < 200) {
-        throw new Error(`Brief no disponible: ${briefData}`);
-      }
-
-      const detectedBusinessName = extractStrategyBusinessName(briefData) || '';
-      const detectedWebsite = extractStrategyWebsite(briefData);
-
-      // Detect communication language from brief
-      let rawLang: CommunicationLanguage | null = null;
-      if (typeof briefData === 'string' && briefData.includes('<')) {
-        rawLang = extractCommunicationLanguageFromBriefHTML(briefData);
-      } else if (typeof briefData === 'string') {
-        rawLang = extractCommunicationLanguageFromText(briefData);
-      }
-      const detectedLangCode: CommunicationLanguage = rawLang ?? 'spanish';
-      const detectedLanguage = formatLanguageLabel(detectedLangCode);
-
-      const strategyMiniBrief = [
-        detectedBusinessName ? `Nombre del Negocio: ${detectedBusinessName}` : null,
-        detectedWebsite ? `Tengo página web: ${detectedWebsite}` : 'Tengo página web: No'
-      ].filter(Boolean).join('\n');
+      const strategyBrief = await getStrategyBriefData(strategyAccountUuid.trim());
+      const { businessName: detectedBusinessName, website: detectedWebsite, languageLabel: detectedLanguage, templateVariant } = strategyBrief;
 
       setStrategyBusinessName(detectedBusinessName);
-      setStrategyWebsite(detectedWebsite || '');
+      setStrategyWebsite(detectedWebsite);
       setStrategyLanguageLabel(detectedLanguage);
-      setStrategyBriefSummary(strategyMiniBrief);
+      setStrategyBriefSummary(strategyBrief.briefSummary);
 
       if (!detectedWebsite) {
         setStrategyStep('no_website');
@@ -4313,34 +4459,16 @@ const App: React.FC = () => {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
+              templateId: templateVariant === 'spanish'
+                ? STRATEGY_TEMPLATE_IDS.spanishNoWebsite
+                : STRATEGY_TEMPLATE_IDS.nonSpanishNoWebsite,
               businessName: detectedBusinessName,
-              language: detectedLangCode,
             }),
           });
-          if (!response.ok) {
-            const rawBody = await response.text();
-            let errData: any = {};
-            try { errData = JSON.parse(rawBody); } catch { /* ignore */ }
-            throw new Error(errData?.error || `Error ${response.status}`);
-          }
-          const ct = response.headers.get('content-type') || '';
-          if (ct.includes('application/pdf')) {
-            const blob = await response.blob();
-            const fileName = response.headers.get('x-file-name') || 'estrategia-sin-web.pdf';
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url; a.download = fileName; a.click();
-            setTimeout(() => URL.revokeObjectURL(url), 10000);
-            setStrategyPdfStatus('success');
-            setStrategyPdfUrl('');
-            setStrategyPdfMsg(`PDF descargado: ${fileName}`);
-          } else {
-            const data = await response.json();
-            if (!data?.success) throw new Error(data?.error || 'Respuesta inválida del servidor');
-            setStrategyPdfStatus('success');
-            setStrategyPdfUrl(data.driveUrl || data.localPath || '');
-            setStrategyPdfMsg('PDF sin web generado correctamente.');
-          }
+          const pdfResult = await parseStrategyPdfResponse(response, 'No se pudo generar el PDF de estrategia sin web');
+          setStrategyPdfStatus('success');
+          setStrategyPdfUrl(pdfResult.localPath);
+          setStrategyPdfMsg(pdfResult.message);
         } catch (pdfError: any) {
           setStrategyPdfStatus('error');
           setStrategyPdfMsg(pdfError.message || 'No se pudo generar el PDF sin web.');
@@ -4348,72 +4476,41 @@ const App: React.FC = () => {
         return;
       }
 
-      // 1. Try SE Ranking first, then fall back to Gemini
-      setStrategyStatusMsg('Obteniendo datos SEO de SE Ranking...');
-      addLog(`🧭 Estrategia SEO: analizando ${detectedWebsite}`);
+      setStrategyStatusMsg('Analizando la web del cliente con SE Ranking...');
+      addLog(`🧭 Estrategia SEO: analizando ${detectedWebsite} con SE Ranking`);
 
-      let seRankingData: any = null;
-      let trafficGrowthPercent = '0';
-      let chartLabels: string[] = [];
-      let chartData: number[] = [];
-
-      try {
-        const seRes = await fetch('/api/se-ranking/analyze', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ website: detectedWebsite }),
-        });
-        if (seRes.ok) {
-          seRankingData = await seRes.json();
-          trafficGrowthPercent = seRankingData.traffic_growth_percent ?? '0';
-          chartLabels = seRankingData.chart_labels ?? [];
-          chartData   = seRankingData.chart_data ?? [];
-          setStrategyChartLabels(seRankingData.chart_labels ?? []);
-          setStrategyChartData(seRankingData.chart_data ?? []);
-          setStrategyTotalKeywords(seRankingData.keywords_count || 0);
-          if (seRankingData.errors?.length) {
-            addLog(`⚠️ SE Ranking (errores internos): ${seRankingData.errors.join(' | ')}`);
-          } else {
-            addLog(`✅ SE Ranking: ${seRankingData.monthly_visits} visitas/mes, ${seRankingData.top_keywords?.length ?? 0} keywords`);
-          }
-        }
-      } catch (seErr: any) {
-        addLog(`⚠️ SE Ranking no disponible: ${seErr.message} — usando Gemini`);
+      const seoResponse = await fetch(buildLocalServerUrl('/api/se-ranking/strategy-analysis'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ websiteUrl: detectedWebsite, businessName: detectedBusinessName }),
+      });
+      const seResult = await seoResponse.json();
+      if (!seoResponse.ok) {
+        throw new Error(seResult?.error || 'SE Ranking no pudo generar el análisis SEO.');
       }
 
-      // 2. Check if SE Ranking returned enough keywords; fall back to Gemini otherwise
-      const seKeywords: Array<{ keyword: string; position?: number }> = (seRankingData?.top_keywords ?? []).filter((k: any) => k.keyword);
-      const needsGemini = seKeywords.length < 5;
+      setStrategyChartLabels(seResult.chart_labels ?? []);
+      setStrategyChartData(seResult.chart_data ?? seResult.monthly_visits_last_6_months ?? []);
+      setStrategyTotalKeywords(seResult.keywords_count || 0);
+      addLog(`✅ SE Ranking: ${seResult.monthly_visits} visitas/mes`);
 
-      let result: any;
-      if (needsGemini) {
-        setStrategyStatusMsg('Completando análisis con Gemini...');
-        addLog(`🤖 SE Ranking devolvió ${seKeywords.length} keywords — completando con Gemini`);
-        const geminiResult = await analyzeSeoStrategy(
-          detectedWebsite,
-          detectedBusinessName || undefined,
-          strategyMiniBrief,
-        );
-        // Merge: SE Ranking traffic if available, Gemini speed/health, combined keywords
-        const mergedKeywords = [
-          ...seKeywords,
-          ...(geminiResult.top_keywords ?? []),
-        ].slice(0, 5);
-        result = {
-          ...geminiResult,
-          monthly_visits: seRankingData?.monthly_visits || geminiResult.monthly_visits,
-          top_keywords: mergedKeywords,
-        };
-      } else {
-        result = {
-          monthly_visits: seRankingData.monthly_visits,
-          site_speed_score: 0,
-          technical_health_score: 0,
-          top_keywords: seKeywords.slice(0, 5),
-        };
-      }
+      setStrategyStatusMsg('Generando keywords estratégicas con Gemini...');
+      const topKeywords = await generateSeoKeywordFallback(detectedWebsite, detectedBusinessName);
 
-      setStrategyAnalysis(result);
+      const growthPercentage = await estimateTrafficGrowthPercentage(
+        seResult.monthly_visits_last_6_months,
+        detectedBusinessName,
+        detectedWebsite,
+      );
+
+      const enrichedResult: SeoStrategyAnalysis = {
+        ...seResult,
+        top_keywords: topKeywords,
+        growth_percentage: growthPercentage,
+        growth_direction: getGrowthDirection(seResult.monthly_visits_last_6_months),
+      };
+
+      setStrategyAnalysis(enrichedResult);
       setStrategyStep('analysis');
       setStrategyStatus('idle');
       setStrategyStatusMsg('');
@@ -4427,42 +4524,18 @@ const App: React.FC = () => {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            templateId: templateVariant === 'spanish'
+              ? STRATEGY_TEMPLATE_IDS.spanishWebsite
+              : STRATEGY_TEMPLATE_IDS.nonSpanishWebsite,
             businessName: detectedBusinessName,
             websiteUrl: detectedWebsite,
-            language: detectedLangCode,
-            analysis: result,
-            trafficGrowthPercent,
-            chartLabels,
-            chartData,
+            analysis: enrichedResult,
           }),
         });
-        if (!response.ok) {
-          const rawBody = await response.text();
-          let errData: any = {};
-          try { errData = JSON.parse(rawBody); } catch { /* ignore */ }
-          throw new Error(errData?.error || `Error ${response.status}`);
-        }
-        const ct = response.headers.get('content-type') || '';
-        if (ct.includes('application/pdf')) {
-          const blob = await response.blob();
-          const fileName = response.headers.get('x-file-name') || 'estrategia-seo.pdf';
-          const chartErr = response.headers.get('x-chart-error');
-          if (chartErr) addLog(`⚠️ Gráfica no insertada: ${chartErr}`);
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url; a.download = fileName; a.click();
-          setTimeout(() => URL.revokeObjectURL(url), 10000);
-          setStrategyPdfStatus('success');
-          setStrategyPdfUrl('');
-          setStrategyPdfMsg(`PDF descargado: ${fileName}`);
-        } else {
-          const data = await response.json();
-          if (!data?.success) throw new Error(data?.error || 'Respuesta inválida del servidor');
-          if (data.chartError) addLog(`⚠️ Gráfica no insertada: ${data.chartError}`);
-          setStrategyPdfStatus('success');
-          setStrategyPdfUrl(data.driveUrl || data.localPath || '');
-          setStrategyPdfMsg('PDF generado correctamente.');
-        }
+        const pdfResult = await parseStrategyPdfResponse(response, 'No se pudo generar el PDF de estrategia');
+        setStrategyPdfStatus('success');
+        setStrategyPdfUrl(pdfResult.localPath);
+        setStrategyPdfMsg(pdfResult.message);
       } catch (pdfError: any) {
         setStrategyPdfStatus('error');
         setStrategyPdfMsg(pdfError.message || 'No se pudo generar el PDF de estrategia.');
@@ -4538,110 +4611,65 @@ const App: React.FC = () => {
     row: { account_uuid: string; task_uuid: string },
     apiKey: string,
   ): Promise<{ businessName: string; website: string; hasWebsite: boolean; driveUrl: string; prodlineOk: boolean }> => {
-    const rawText = await fetchBriefByUuid(row.account_uuid);
-    let briefData: any;
-    if (rawText.toLowerCase().includes('<!doctype html') || rawText.includes('<html')) {
-      briefData = rawText;
-    } else {
-      try { briefData = JSON.parse(rawText); } catch { briefData = rawText; }
-    }
-    if (typeof briefData === 'string' && !briefData.includes('<') && briefData.length < 200) {
-      throw new Error(`Brief no disponible: ${briefData}`);
-    }
-
-    const businessName = extractStrategyBusinessName(briefData) || '';
-    const website = extractStrategyWebsite(briefData) || '';
-
-    // Detect language
-    let rawLang: CommunicationLanguage | null = null;
-    if (typeof briefData === 'string' && briefData.includes('<')) {
-      rawLang = extractCommunicationLanguageFromBriefHTML(briefData);
-    } else if (typeof briefData === 'string') {
-      rawLang = extractCommunicationLanguageFromText(briefData);
-    }
-    const langCode: CommunicationLanguage = rawLang ?? 'spanish';
-
-    const miniBrief = [
-      businessName ? `Nombre del Negocio: ${businessName}` : null,
-      website ? `Tengo página web: ${website}` : 'Tengo página web: No',
-    ].filter(Boolean).join('\n');
+    const strategyBrief = await getStrategyBriefData(row.account_uuid);
+    const { businessName, website, templateVariant } = strategyBrief;
 
     let driveUrl = '';
 
     if (!website) {
       const res = await fetch('/api/google-drive/generate-strategy-no-website-pdf', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ businessName, language: langCode }),
+        body: JSON.stringify({
+          templateId: templateVariant === 'spanish'
+            ? STRATEGY_TEMPLATE_IDS.spanishNoWebsite
+            : STRATEGY_TEMPLATE_IDS.nonSpanishNoWebsite,
+          businessName,
+        }),
       });
-      if (!res.ok) {
-        const txt = await res.text();
-        let err: any = {}; try { err = JSON.parse(txt); } catch {}
-        throw new Error(err?.error || `Error ${res.status}`);
-      }
-      const ct = res.headers.get('content-type') || '';
-      if (!ct.includes('application/pdf')) {
-        const data = await res.json();
-        if (!data?.success) throw new Error(data?.error || 'Respuesta inválida');
-        driveUrl = data.driveUrl || data.localPath || '';
-      }
+      const pdfResult = await parseStrategyPdfResponse(res, 'No se pudo generar el PDF sin web');
+      driveUrl = pdfResult.localPath;
     } else {
-      // SE Ranking → Gemini fallback
-      let seData: any = null;
-      let trafficGrowthPercent = '0';
-      let chartLabels: string[] = [];
-      let chartDataArr: number[] = [];
-      try {
-        const seRes = await fetch('/api/se-ranking/analyze', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ website }),
-        });
-        if (seRes.ok) {
-          seData = await seRes.json();
-          trafficGrowthPercent = seData.traffic_growth_percent ?? '0';
-          chartLabels  = seData.chart_labels ?? [];
-          chartDataArr = seData.chart_data ?? [];
-        }
-      } catch { /* SE Ranking unavailable */ }
-
-      const seKeywords = (seData?.top_keywords ?? []).filter((k: any) => k.keyword);
-      let analysis: any;
-      if (seKeywords.length >= 5) {
-        analysis = {
-          monthly_visits: seData.monthly_visits,
-          site_speed_score: 0,
-          technical_health_score: 0,
-          top_keywords: seKeywords.slice(0, 5),
-        };
-      } else {
-        const gemini = await analyzeSeoStrategy(website, businessName || undefined, miniBrief);
-        analysis = {
-          ...gemini,
-          monthly_visits: seData?.monthly_visits || gemini.monthly_visits,
-          top_keywords: [...seKeywords, ...(gemini.top_keywords ?? [])].slice(0, 5),
-        };
+      // 1. SE Ranking strategy analysis
+      const seoResponse = await fetch(buildLocalServerUrl('/api/se-ranking/strategy-analysis'), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ websiteUrl: website, businessName }),
+      });
+      const seResult = await seoResponse.json();
+      if (!seoResponse.ok) {
+        throw new Error(seResult?.error || 'SE Ranking no pudo generar el análisis SEO.');
       }
 
+      // 2. Gemini: strategic keywords + growth percentage
+      const topKeywords = await generateSeoKeywordFallback(website, businessName);
+      const growthPercentage = await estimateTrafficGrowthPercentage(
+        seResult.monthly_visits_last_6_months,
+        businessName,
+        website,
+      );
+      const enrichedAnalysis: SeoStrategyAnalysis = {
+        ...seResult,
+        top_keywords: topKeywords,
+        growth_percentage: growthPercentage,
+        growth_direction: getGrowthDirection(seResult.monthly_visits_last_6_months),
+      };
+
+      // 3. Generate PDF
       const res = await fetch('/api/google-drive/generate-strategy-pdf', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          businessName, websiteUrl: website, language: langCode,
-          analysis, trafficGrowthPercent, chartLabels, chartData: chartDataArr,
+          templateId: templateVariant === 'spanish'
+            ? STRATEGY_TEMPLATE_IDS.spanishWebsite
+            : STRATEGY_TEMPLATE_IDS.nonSpanishWebsite,
+          businessName,
+          websiteUrl: website,
+          analysis: enrichedAnalysis,
         }),
       });
-      if (!res.ok) {
-        const txt = await res.text();
-        let err: any = {}; try { err = JSON.parse(txt); } catch {}
-        throw new Error(err?.error || `Error ${res.status}`);
-      }
-      const ct = res.headers.get('content-type') || '';
-      if (!ct.includes('application/pdf')) {
-        const data = await res.json();
-        if (!data?.success) throw new Error(data?.error || 'Respuesta inválida');
-        driveUrl = data.driveUrl || data.localPath || '';
-      }
+      const pdfResult = await parseStrategyPdfResponse(res, 'No se pudo generar el PDF de estrategia');
+      driveUrl = pdfResult.localPath;
     }
 
-    // Prodline: solo si tenemos Drive URL
+    // Prodline: solo si tenemos Drive URL y task_uuid
     let prodlineOk = false;
     if (driveUrl && row.task_uuid) {
       const sync = await syncMarketingActionDirect(row.task_uuid, driveUrl, 'on_blog', apiKey, 'strategy_seo');
